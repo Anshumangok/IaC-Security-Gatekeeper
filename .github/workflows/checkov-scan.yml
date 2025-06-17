@@ -1,0 +1,26 @@
+name: Checkov Scan
+
+on:
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  checkov:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Install Checkov
+        run: pip install checkov
+
+      - name: Run Checkov on Terraform
+        run: checkov -d terraform
+
+      - name: Run Checkov on K8s
+        run: checkov -d k8s
