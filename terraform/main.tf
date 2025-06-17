@@ -1,4 +1,4 @@
 resource "aws_s3_bucket" "example" {
-  bucket = "my-public-bucket"
-  acl    = "public-read"  # ❌ Misconfigured
+   acl    = "public-read"
+   bucket = "my-insecure-bucket # ❌ Misconfigured
 }
