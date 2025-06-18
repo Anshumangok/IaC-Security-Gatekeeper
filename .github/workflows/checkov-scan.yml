@@ -1,4 +1,4 @@
-name: Checkov Scan
+name: Checkov Scan (Modified Files Only)
 
 on:
   pull_request:
@@ -7,6 +7,7 @@ on:
 jobs:
   checkov:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
@@ -19,8 +20,27 @@ jobs:
       - name: Install Checkov
         run: pip install checkov
 
-      - name: Run Checkov on Terraform
-        run: checkov -d terraform
+      - name: Get list of modified files
+        id: file_changes
+        run: |
+          git fetch origin main
+          MODIFIED_FILES=$(git diff --name-only origin/main...HEAD | grep -E '\.tf$|\.yaml$|\.yml$' || true)
+          echo "$MODIFIED_FILES"
+          echo "files=$MODIFIED_FILES" >> $GITHUB_OUTPUT
 
-      - name: Run Checkov on K8s
-        run: checkov -d k8s
+      - name: Run Checkov on changed files
+        if: steps.file_changes.outputs.files != ''
+        run: |
+          for file in ${{ steps.file_changes.outputs.files }}; do
+            echo "Scanning $file..."
+            checkov -f "$file"
+          done
+
+      - name: No IaC files changed
+        if: steps.file_changes.outputs.files == ''
+        run: echo "✅ No Terraform or Kubernetes files modified in this PR."
+     
+      - name: Run Checkov and Save JSON Report
+        run: |
+          mkdir -p checkov_reports
+          checkov -d . --output json > checkov_reports/report.json
