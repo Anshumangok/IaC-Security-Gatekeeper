@@ -1,5 +1,5 @@
 resource "aws_s3_bucket" "public_bucket" {
-  bucket = "my-test-public-bucket-v2"
+  bucket = "my-test-public-bucket-v4"
   acl    = "public-read"
 
   tags = {
