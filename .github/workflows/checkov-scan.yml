@@ -32,14 +32,14 @@ jobs:
         if: steps.file_changes.outputs.files != ''
         run: |
           for file in ${{ steps.file_changes.outputs.files }}; do
-            echo "🔍 Scanning $file..."
+            echo "Scanning $file..."
             checkov -f "$file"
           done
 
       - name: No IaC files changed
         if: steps.file_changes.outputs.files == ''
         run: echo "✅ No Terraform or Kubernetes files modified in this PR."
-
+     
       - name: Run Checkov and Save JSON Report
         run: |
           mkdir -p checkov_reports
@@ -48,7 +48,7 @@ jobs:
       - name: Generate Markdown report from Checkov JSON output
         run: python scripts/generate_md_report.py
 
-      - name: Upload Markdown report
+            - name: Upload Markdown report
         uses: actions/upload-artifact@v4
         with:
           name: checkov-report
