@@ -48,7 +48,7 @@ jobs:
       - name: Generate Markdown report from Checkov JSON output
         run: python scripts/generate_md_report.py
 
-      - name: Debug: Check if Markdown report exists
+      - name: Debug - Check if Markdown report exists
         run: |
           echo "📁 Contents of checkov_reports:"
           ls -l checkov_reports/
