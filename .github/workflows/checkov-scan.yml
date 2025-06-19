@@ -27,17 +27,11 @@ jobs:
           MODIFIED_FILES=$(git diff --name-only origin/main...HEAD | grep -E '\.tf$|\.yaml$|\.yml$' || true)
           echo "files=$MODIFIED_FILES" >> $GITHUB_OUTPUT
 
-      - name: Run Checkov and Save JSON Report
-        if: steps.file_changes.outputs.files != ''
+      - name: Run Checkov and Save JSON Report (All Files)
         run: |
           mkdir -p checkov_reports
-          FILES="${{ steps.file_changes.outputs.files }}"
-          echo "[" > checkov_reports/report.json
-          for file in $FILES; do
-            echo "Scanning $file..."
-            checkov -f "$file" --output json >> checkov_reports/report.json
-          done
-          echo "]" >> checkov_reports/report.json
+          checkov -d . --output json > checkov_reports/report.json
+
 
       - name: Generate Markdown report from Checkov JSON output
         if: steps.file_changes.outputs.files != ''
