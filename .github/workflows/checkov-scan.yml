@@ -32,12 +32,10 @@ jobs:
         run: |
           mkdir -p checkov_reports
           FILES="${{ steps.file_changes.outputs.files }}"
-          echo '{ "results": { "failed_checks": [] } }' > checkov_reports/report.json
+          echo "[]" > checkov_reports/report.json
           for file in $FILES; do
-            echo "🔍 Scanning $file..."
-            checkov -f "$file" --output json > tmp_checkov.json
-            jq -s '.[0].results.failed_checks + .[1].results.failed_checks | { "results": { "failed_checks": . } }' checkov_reports/report.json tmp_checkov.json > tmp_merged.json
-            mv tmp_merged.json checkov_reports/report.json
+            echo "Scanning $file..."
+            checkov -f "$file" --output json >> checkov_reports/report.json
           done
 
       - name: Debug: Print Checkov JSON output
