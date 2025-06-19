@@ -51,7 +51,6 @@ jobs:
             checkov -f "$file" --output json >> checkov_reports/report.json
           done
 
-
       - name: Debug: Print Checkov JSON output
         if: steps.file_changes.outputs.files != ''
         run: cat checkov_reports/report.json
