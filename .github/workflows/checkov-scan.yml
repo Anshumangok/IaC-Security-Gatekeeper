@@ -25,20 +25,7 @@ jobs:
         run: |
           git fetch origin main
           MODIFIED_FILES=$(git diff --name-only origin/main...HEAD | grep -E '\.tf$|\.yaml$|\.yml$' || true)
-          echo "$MODIFIED_FILES"
           echo "files=$MODIFIED_FILES" >> $GITHUB_OUTPUT
-
-      - name: Run Checkov on changed files
-        if: steps.file_changes.outputs.files != ''
-        run: |
-          for file in ${{ steps.file_changes.outputs.files }}; do
-            echo "🔍 Scanning $file..."
-            checkov -f "$file"
-          done
-
-      - name: No IaC files changed
-        if: steps.file_changes.outputs.files == ''
-        run: echo "✅ No Terraform or Kubernetes files modified in this PR."
 
       - name: Run Checkov and Save JSON Report
         if: steps.file_changes.outputs.files != ''
@@ -47,9 +34,13 @@ jobs:
           FILES="${{ steps.file_changes.outputs.files }}"
           echo "[]" > checkov_reports/report.json
           for file in $FILES; do
-            echo "Scanning $file..."
+            echo "🔍 Scanning $file..."
             checkov -f "$file" --output json >> checkov_reports/report.json
           done
+
+      - name: No IaC files changed
+        if: steps.file_changes.outputs.files == ''
+        run: echo "✅ No Terraform or Kubernetes files modified in this PR."
 
       - name: Debug: Print Checkov JSON output
         if: steps.file_changes.outputs.files != ''
