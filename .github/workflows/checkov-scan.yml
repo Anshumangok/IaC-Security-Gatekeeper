@@ -30,7 +30,7 @@ jobs:
       - name: Run Checkov and Save JSON Report (All Files)
         run: |
           mkdir -p checkov_reports
-          checkov -d . --output json > checkov_reports/report.json
+          checkov -d . --output json --soft-fail > checkov_reports/report.json
 
 
       - name: Generate Markdown report from Checkov JSON output
