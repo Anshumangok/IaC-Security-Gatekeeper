@@ -45,11 +45,12 @@ jobs:
         run: |
           mkdir -p checkov_reports
           FILES="${{ steps.file_changes.outputs.files }}"
-          echo "[]" > checkov_reports/report.json  # properly initialize with valid JSON
+          echo "[]" > checkov_reports/report.json
           for file in $FILES; do
             echo "Scanning $file..."
             checkov -f "$file" --output json >> checkov_reports/report.json
           done
+
 
       - name: Debug: Print Checkov JSON output
         if: steps.file_changes.outputs.files != ''
