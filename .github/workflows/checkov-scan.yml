@@ -45,11 +45,10 @@ jobs:
         run: |
           mkdir -p checkov_reports
           FILES="${{ steps.file_changes.outputs.files }}"
-          echo "🔍 Running Checkov on modified files:"
-          > checkov_reports/report.json  # clear file
+          echo "[]" > checkov_reports/report.json  # properly initialize with valid JSON
           for file in $FILES; do
-          echo "Scanning $file..."
-          checkov -f "$file" --output json >> checkov_reports/report.json
+            echo "Scanning $file..."
+            checkov -f "$file" --output json >> checkov_reports/report.json
           done
 
       - name: Debug: Print Checkov JSON output
@@ -57,14 +56,17 @@ jobs:
         run: cat checkov_reports/report.json
 
       - name: Generate Markdown report from Checkov JSON output
+        if: steps.file_changes.outputs.files != ''
         run: python scripts/generate_md_report.py
 
       - name: Debug - Check if Markdown report exists
+        if: steps.file_changes.outputs.files != ''
         run: |
           echo "📁 Contents of checkov_reports:"
           ls -l checkov_reports/
 
       - name: Upload Markdown report
+        if: steps.file_changes.outputs.files != ''
         uses: actions/upload-artifact@v4
         with:
           name: checkov-report
