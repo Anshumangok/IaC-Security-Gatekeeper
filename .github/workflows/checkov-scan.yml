@@ -20,29 +20,32 @@ jobs:
       - name: Install Checkov
         run: pip install checkov
 
-      - name: Get list of modified files
+      - name: Get list of modified IaC files
         id: file_changes
         run: |
           git fetch origin main
-          MODIFIED_FILES=$(git diff --name-only origin/main...HEAD | grep -E '\.tf$|\.yaml$|\.yml$' || true)
-          echo "files=$MODIFIED_FILES" >> $GITHUB_OUTPUT
+          MODIFIED_FILES=$(git diff --name-only origin/main...HEAD | grep -E '\.tf$|\.ya?ml$' || true)
+          echo "files<<EOF" >> $GITHUB_OUTPUT
+          echo "$MODIFIED_FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
-      - name: Run Checkov and Save JSON Report (All Files)
+      - name: Run Checkov and Save JSON Report
+        if: steps.file_changes.outputs.files != ''
         run: |
           mkdir -p checkov_reports
-          checkov -d . --output json --soft-fail > checkov_reports/report.json
+          echo "[]" > checkov_reports/report.json
+          for file in ${{ steps.file_changes.outputs.files }}; do
+            echo "🔍 Scanning $file..."
+            checkov -f "$file" --output json >> checkov_reports/report.json
+          done
 
-
-      - name: Generate Markdown report from Checkov JSON output
+      - name: Debug - Show Checkov raw JSON output
         if: steps.file_changes.outputs.files != ''
-        run: |
-          python scripts/generate_md_report.py
+        run: cat checkov_reports/report.json
 
-      - name: Debug - Check if Markdown report exists
+      - name: Generate Markdown report from Checkov JSON
         if: steps.file_changes.outputs.files != ''
-        run: |
-          echo "📁 Contents of checkov_reports:"
-          ls -l checkov_reports/
+        run: python scripts/generate_md_report.py
 
       - name: Upload Markdown report
         if: steps.file_changes.outputs.files != ''
