@@ -23,11 +23,9 @@ jobs:
       - name: Get list of modified files
         id: file_changes
         run: |
-        git fetch origin main
-        MODIFIED_FILES=$(git diff --name-only origin/main...HEAD | grep -E '\.tf$|\.yaml$|\.yml$' || true)
-        echo "Detected changes:"
-        echo "$MODIFIED_FILES"
-        echo "files=$MODIFIED_FILES" >> $GITHUB_OUTPUT
+          git fetch origin main
+          MODIFIED_FILES=$(git diff --name-only origin/main...HEAD | grep -E '\.tf$|\.yaml$|\.yml$' || true)
+          echo "files=$MODIFIED_FILES" >> $GITHUB_OUTPUT
 
       - name: Run Checkov and Save JSON Report
         if: steps.file_changes.outputs.files != ''
