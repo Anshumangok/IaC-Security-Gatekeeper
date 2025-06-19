@@ -41,9 +41,17 @@ jobs:
         run: echo "✅ No Terraform or Kubernetes files modified in this PR."
 
       - name: Run Checkov and Save JSON Report
+        if: steps.file_changes.outputs.files != ''
         run: |
           mkdir -p checkov_reports
-          checkov -d . --output json --soft-fail > checkov_reports/report.json
+          FILES="${{ steps.file_changes.outputs.files }}"
+          echo "🔍 Running Checkov on modified files:"
+          > checkov_reports/report.json  # clear file
+          for file in $FILES; do
+          echo "Scanning $file..."
+          checkov -f "$file" --output json >> checkov_reports/report.json
+          done
+
 
       - name: Generate Markdown report from Checkov JSON output
         run: python scripts/generate_md_report.py
