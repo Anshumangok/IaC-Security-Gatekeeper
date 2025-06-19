@@ -25,7 +25,7 @@ jobs:
         run: |
           git fetch origin main
           MODIFIED_FILES=$(git diff --name-only origin/main...HEAD | grep -E '\.tf$|\.yaml$|\.yml$' || true)
-          echo "files=$MODIFIED_FILES" >> "$GITHUB_OUTPUT"
+          echo "files=$MODIFIED_FILES" >> $GITHUB_OUTPUT
 
       - name: Run Checkov and Save JSON Report
         if: steps.file_changes.outputs.files != ''
@@ -39,13 +39,10 @@ jobs:
           done
           echo "]" >> checkov_reports/report.json
 
-      - name: Debug: Print Checkov JSON output
-        if: steps.file_changes.outputs.files != ''
-        run: cat checkov_reports/report.json
-
       - name: Generate Markdown report from Checkov JSON output
         if: steps.file_changes.outputs.files != ''
-        run: python scripts/generate_md_report.py
+        run: |
+          python scripts/generate_md_report.py
 
       - name: Debug - Check if Markdown report exists
         if: steps.file_changes.outputs.files != ''
