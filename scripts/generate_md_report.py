@@ -8,13 +8,14 @@ def parse_checkov_report(report_path):
         return ""
 
     with open(report_path, "r") as f:
-        data = json.load(f)
+        try:
+            data = json.load(f)
+        except json.JSONDecodeError as e:
+            print(f"[ERROR] Failed to parse JSON: {e}")
+            return "# ❌ Failed to parse Checkov report.\n"
 
-    if "results" not in data:
+    if not isinstance(data, dict) or "results" not in data:
         return "# ✅ No issues found by Checkov.\n"
-
-    output = "# 🚨 Checkov Scan Report\n"
-    output += f"_Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_\n\n"
 
     results = data.get("results", {})
     failed_checks = results.get("failed_checks", [])
@@ -22,6 +23,8 @@ def parse_checkov_report(report_path):
     if not failed_checks:
         return "# ✅ No failed checks found!\n"
 
+    output = "# 🚨 Checkov Scan Report\n"
+    output += f"_Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_\n\n"
     output += f"## ❌ {len(failed_checks)} Failed Checks\n\n"
 
     for check in failed_checks:
@@ -40,6 +43,7 @@ if __name__ == "__main__":
 
     output_path = "checkov_reports/report.md"
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
     with open(output_path, "w") as f:
         f.write(markdown)
 
