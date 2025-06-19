@@ -2,7 +2,7 @@ name: Checkov Scan (Modified Files Only)
 
 on:
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 jobs:
   checkov:
@@ -20,35 +20,41 @@ jobs:
       - name: Install Checkov
         run: pip install checkov
 
-      - name: Get list of modified IaC files
-        id: file_changes
+      - name: Get modified IaC files
+        id: changes
         run: |
           git fetch origin main
           MODIFIED_FILES=$(git diff --name-only origin/main...HEAD | grep -E '\.tf$|\.ya?ml$' || true)
-          echo "files<<EOF" >> $GITHUB_OUTPUT
-          echo "$MODIFIED_FILES" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          echo "Modified files:"
+          echo "$MODIFIED_FILES"
+          echo "files=$MODIFIED_FILES" >> $GITHUB_OUTPUT
 
       - name: Run Checkov and Save JSON Report
-        if: steps.file_changes.outputs.files != ''
+        if: steps.changes.outputs.files != ''
         run: |
           mkdir -p checkov_reports
           echo "[]" > checkov_reports/report.json
-          for file in ${{ steps.file_changes.outputs.files }}; do
-            echo "🔍 Scanning $file..."
+          for file in ${{ steps.changes.outputs.files }}; do
+            echo "🔍 Scanning $file"
             checkov -f "$file" --output json >> checkov_reports/report.json
           done
 
-      - name: Debug - Show Checkov raw JSON output
-        if: steps.file_changes.outputs.files != ''
+      - name: Debug - Show raw Checkov JSON
+        if: steps.changes.outputs.files != ''
         run: cat checkov_reports/report.json
 
-      - name: Generate Markdown report from Checkov JSON
-        if: steps.file_changes.outputs.files != ''
+      - name: Generate Markdown report
+        if: steps.changes.outputs.files != ''
         run: python scripts/generate_md_report.py
 
+      - name: Debug - Check Markdown file exists
+        if: steps.changes.outputs.files != ''
+        run: |
+          echo "📝 checkov_reports directory content:"
+          ls -l checkov_reports/
+
       - name: Upload Markdown report
-        if: steps.file_changes.outputs.files != ''
+        if: steps.changes.outputs.files != ''
         uses: actions/upload-artifact@v4
         with:
           name: checkov-report
