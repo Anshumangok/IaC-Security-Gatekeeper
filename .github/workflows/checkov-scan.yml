@@ -1,4 +1,4 @@
-name: Checkov Scan (Modified Files Only)
+name: Checkov Scan (All IaC Files)
 
 on:
   pull_request:
@@ -20,41 +20,26 @@ jobs:
       - name: Install Checkov
         run: pip install checkov
 
-      - name: Get list of modified IaC files
-        id: changes
-        run: |
-          git fetch origin main
-          MODIFIED=$(git diff --name-only origin/main...HEAD | grep -E '\.tf$|\.ya?ml$' || true)
-          echo "files=$MODIFIED" >> $GITHUB_OUTPUT
-
-      - name: Run Checkov on changed files and save JSON report
-        if: steps.changes.outputs.files != ''
+      - name: Run Checkov and Save JSON Report
         run: |
           mkdir -p checkov_reports
-          FILES="${{ steps.changes.outputs.files }}"
-          echo '[]' > checkov_reports/report.json
-          for file in $FILES; do
-            echo "🔍 Scanning $file"
-            checkov -f "$file" --output json | jq -s '.[0]' > checkov_reports/tmp.json
-            jq -s '.[0] + .[1]' checkov_reports/report.json checkov_reports/tmp.json > checkov_reports/merged.json
-            mv checkov_reports/merged.json checkov_reports/report.json
-          done
+          checkov -d . --output json > checkov_reports/report.json
 
-      - name: Debug - Print raw Checkov JSON
-        if: steps.changes.outputs.files != ''
+      - name: Print Checkov JSON output
         run: cat checkov_reports/report.json
 
-      - name: Generate Markdown report
-        if: steps.changes.outputs.files != ''
-        run: python3 scripts/generate_md_report.py
+      - name: Generate Markdown report from Checkov JSON output
+        run: |
+          pip install -r requirements.txt || true  # if your script has dependencies
+          python scripts/generate_md_report.py
+
+      - name: Debug - Check if Markdown report exists
+        run: |
+          echo "📁 Contents of checkov_reports:"
+          ls -l checkov_reports/
 
       - name: Upload Markdown report
-        if: steps.changes.outputs.files != ''
         uses: actions/upload-artifact@v4
         with:
           name: checkov-report
           path: checkov_reports/report.md
-
-      - name: No IaC files changed
-        if: steps.changes.outputs.files == ''
-        run: echo "✅ No Terraform or Kubernetes files changed."
