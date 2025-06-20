@@ -1,33 +1,175 @@
 import json
 import os
 from datetime import datetime
+import sys
 
-def parse_checkov_report(path):
-    with open(path, 'r') as f:
-        data = json.load(f)
+def parse_checkov_report(json_path):
+    """Parse Checkov JSON report and generate markdown"""
+    
+    # Check if file exists
+    if not os.path.exists(json_path):
+        print(f"❌ Error: {json_path} not found")
+        return generate_error_report(f"JSON report file not found: {json_path}")
+    
+    try:
+        with open(json_path, 'r', encoding='utf-8') as f:
+            content = f.read().strip()
+            
+        if not content:
+            print("❌ Error: JSON file is empty")
+            return generate_error_report("JSON report file is empty")
+            
+        # Parse JSON
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError as e:
+            print(f"❌ Error parsing JSON: {e}")
+            print("📄 Raw content preview:")
+            print(content[:500] + "..." if len(content) > 500 else content)
+            return generate_error_report(f"Invalid JSON format: {e}")
+        
+        # Debug: Print structure
+        print("🔍 JSON structure keys:", list(data.keys()) if isinstance(data, dict) else "Not a dict")
+        
+        # Handle different Checkov output formats
+        failed_checks = []
+        passed_checks = []
+        
+        if isinstance(data, dict):
+            # New format: results at top level
+            if "results" in data:
+                results = data["results"]
+                failed_checks = results.get("failed_checks", [])
+                passed_checks = results.get("passed_checks", [])
+            # Alternative format: direct access
+            elif "failed_checks" in data:
+                failed_checks = data.get("failed_checks", [])
+                passed_checks = data.get("passed_checks", [])
+            # Check if it's a list format
+            elif isinstance(data, list) and len(data) > 0:
+                # Sometimes Checkov returns a list
+                for item in data:
+                    if isinstance(item, dict) and "results" in item:
+                        failed_checks.extend(item["results"].get("failed_checks", []))
+                        passed_checks.extend(item["results"].get("passed_checks", []))
+        
+        print(f"📊 Found {len(failed_checks)} failed checks and {len(passed_checks)} passed checks")
+        
+        return generate_markdown_report(failed_checks, passed_checks)
+        
+    except Exception as e:
+        print(f"❌ Unexpected error: {e}")
+        return generate_error_report(f"Unexpected error processing report: {e}")
 
-    if not data or "results" not in data or not data["results"].get("failed_checks"):
-        return "# ✅ No failed checks found.\n"
-
-    report = "# 🚨 Checkov Scan Report\n"
+def generate_error_report(error_message):
+    """Generate an error report in markdown format"""
+    report = "# ❌ Checkov Scan Report - Error\n\n"
     report += f"_Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_\n\n"
-
-    failed = data["results"]["failed_checks"]
-    report += f"## ❌ {len(failed)} Failed Checks\n\n"
-
-    for check in failed:
-        report += f"### 🔎 {check.get('check_id')} - {check.get('check_name')}\n"
-        report += f"- **Severity**: `{check.get('severity', 'UNKNOWN')}`\n"
-        report += f"- **File**: `{check.get('file_path')}`\n"
-        report += f"- **Resource**: `{check.get('resource')}`\n"
-        report += f"- **Guideline**: {check.get('guideline', 'N/A')}\n\n"
-
+    report += f"**Error**: {error_message}\n\n"
+    report += "## Troubleshooting\n\n"
+    report += "1. Check if Checkov ran successfully\n"
+    report += "2. Verify the JSON output format\n"
+    report += "3. Check file permissions and paths\n"
     return report
 
-if __name__ == "__main__":
-    os.makedirs("checkov_reports", exist_ok=True)
-    markdown = parse_checkov_report("checkov_reports/report.json")
-    with open("checkov_reports/report.md", "w") as f:
-        f.write(markdown)
+def generate_markdown_report(failed_checks, passed_checks):
+    """Generate the main markdown report"""
+    report = "# 🛡️ Checkov IaC Security Scan Report\n\n"
+    report += f"_Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_\n\n"
+    
+    # Summary section
+    report += "## 📊 Summary\n\n"
+    report += f"- ✅ **Passed Checks**: {len(passed_checks)}\n"
+    report += f"- ❌ **Failed Checks**: {len(failed_checks)}\n"
+    report += f"- 📝 **Total Checks**: {len(passed_checks) + len(failed_checks)}\n\n"
+    
+    if len(failed_checks) == 0:
+        report += "## 🎉 All Checks Passed!\n\n"
+        report += "Your Infrastructure as Code files are compliant with security best practices.\n\n"
+        return report
+    
+    # Failed checks section
+    report += f"## ❌ Failed Checks ({len(failed_checks)})\n\n"
+    
+    # Group by severity
+    severity_groups = {}
+    for check in failed_checks:
+        severity = check.get('severity', 'UNKNOWN').upper()
+        if severity not in severity_groups:
+            severity_groups[severity] = []
+        severity_groups[severity].append(check)
+    
+    # Order by severity (CRITICAL, HIGH, MEDIUM, LOW, etc.)
+    severity_order = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO', 'UNKNOWN']
+    
+    for severity in severity_order:
+        if severity in severity_groups:
+            checks = severity_groups[severity]
+            report += f"### 🚨 {severity} Severity ({len(checks)} issues)\n\n"
+            
+            for i, check in enumerate(checks, 1):
+                report += f"#### {i}. {check.get('check_name', 'Unknown Check')}\n\n"
+                report += f"- **Check ID**: `{check.get('check_id', 'N/A')}`\n"
+                report += f"- **File**: `{check.get('file_path', 'N/A')}`\n"
+                report += f"- **Resource**: `{check.get('resource', 'N/A')}`\n"
+                
+                # Add line numbers if available
+                if 'file_line_range' in check:
+                    line_range = check['file_line_range']
+                    report += f"- **Lines**: {line_range[0]}-{line_range[1]}\n"
+                
+                # Add description if available
+                if 'description' in check:
+                    report += f"- **Description**: {check['description']}\n"
+                
+                # Add guideline if available
+                if 'guideline' in check and check['guideline']:
+                    report += f"- **Guideline**: {check['guideline']}\n"
+                
+                # Add code block if available
+                if 'code_block' in check and check['code_block']:
+                    report += f"\n**Code Block:**\n```hcl\n{check['code_block'][0][1]}\n```\n"
+                
+                report += "\n---\n\n"
+    
+    # Add remediation tips
+    report += "## 🔧 Remediation Tips\n\n"
+    report += "1. **Review each failed check** and understand the security implications\n"
+    report += "2. **Apply the recommended fixes** based on the guidelines provided\n"
+    report += "3. **Test your changes** in a development environment first\n"
+    report += "4. **Re-run Checkov** to verify fixes\n\n"
+    
+    return report
 
-    print("[✅] Markdown report generated.")
+def main():
+    """Main function"""
+    # Ensure reports directory exists
+    os.makedirs("checkov_reports", exist_ok=True)
+    
+    json_path = "checkov_reports/report.json"
+    output_path = "checkov_reports/report.md"
+    
+    print(f"🔍 Looking for Checkov JSON report at: {json_path}")
+    
+    # Generate markdown report
+    markdown_content = parse_checkov_report(json_path)
+    
+    # Write markdown report
+    try:
+        with open(output_path, "w", encoding='utf-8') as f:
+            f.write(markdown_content)
+        print(f"✅ Markdown report generated successfully at: {output_path}")
+        
+        # Print summary to console
+        print("\n📄 Report Summary:")
+        lines = markdown_content.split('\n')
+        for line in lines:
+            if line.startswith('- ✅') or line.startswith('- ❌') or line.startswith('- 📝'):
+                print(line)
+                
+    except Exception as e:
+        print(f"❌ Error writing markdown report: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
