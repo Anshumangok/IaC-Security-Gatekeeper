@@ -49,7 +49,15 @@ jobs:
           pip install -r requirements.txt || echo "No requirements.txt found, skipping..."
 
       - name: Generate Markdown report from Checkov JSON output
-        run: python scripts/generate_md_report.py
+        run: |
+          # Try the robust version first, fall back to original if needed
+          if [ -f "scripts/robust_generate_md_report.py" ]; then
+            echo "Using robust report generator..."
+            python scripts/robust_generate_md_report.py
+          else
+            echo "Using original report generator..."
+            python scripts/generate_md_report.py
+          fi
 
       - name: Debug - Check if Markdown report exists
         run: |

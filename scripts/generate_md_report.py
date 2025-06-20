@@ -83,6 +83,13 @@ def parse_checkov_report(json_path):
         
         print(f"📊 Found {len(failed_checks)} failed checks and {len(passed_checks)} passed checks")
         
+        # Debug: Print first failed check structure if available
+        if failed_checks:
+            print("🔍 First failed check structure:")
+            first_check = failed_checks[0]
+            for key, value in first_check.items():
+                print(f"  {key}: {type(value)} = {str(value)[:100]}...")
+        
         return generate_markdown_report(failed_checks, passed_checks)
         
     except Exception as e:
@@ -122,7 +129,11 @@ def generate_markdown_report(failed_checks, passed_checks):
     # Group by severity
     severity_groups = {}
     for check in failed_checks:
-        severity = check.get('severity', 'UNKNOWN').upper()
+        severity = check.get('severity', 'UNKNOWN')
+        # Handle None or empty severity values
+        if severity is None or severity == '':
+            severity = 'UNKNOWN'
+        severity = str(severity).upper()
         if severity not in severity_groups:
             severity_groups[severity] = []
         severity_groups[severity].append(check)
@@ -142,21 +153,31 @@ def generate_markdown_report(failed_checks, passed_checks):
                 report += f"- **Resource**: `{check.get('resource', 'N/A')}`\n"
                 
                 # Add line numbers if available
-                if 'file_line_range' in check:
+                if 'file_line_range' in check and check['file_line_range']:
                     line_range = check['file_line_range']
-                    report += f"- **Lines**: {line_range[0]}-{line_range[1]}\n"
+                    if isinstance(line_range, list) and len(line_range) >= 2:
+                        report += f"- **Lines**: {line_range[0]}-{line_range[1]}\n"
                 
                 # Add description if available
-                if 'description' in check:
-                    report += f"- **Description**: {check['description']}\n"
+                description = check.get('description', '')
+                if description and description.strip():
+                    report += f"- **Description**: {description}\n"
                 
                 # Add guideline if available
-                if 'guideline' in check and check['guideline']:
-                    report += f"- **Guideline**: {check['guideline']}\n"
+                guideline = check.get('guideline', '')
+                if guideline and guideline.strip():
+                    report += f"- **Guideline**: {guideline}\n"
                 
                 # Add code block if available
                 if 'code_block' in check and check['code_block']:
-                    report += f"\n**Code Block:**\n```hcl\n{check['code_block'][0][1]}\n```\n"
+                    try:
+                        if isinstance(check['code_block'], list) and len(check['code_block']) > 0:
+                            if isinstance(check['code_block'][0], list) and len(check['code_block'][0]) > 1:
+                                code = check['code_block'][0][1]
+                                report += f"\n**Code Block:**\n```hcl\n{code}\n```\n"
+                    except (IndexError, TypeError):
+                        # Skip if code_block format is unexpected
+                        pass
                 
                 report += "\n---\n\n"
     
