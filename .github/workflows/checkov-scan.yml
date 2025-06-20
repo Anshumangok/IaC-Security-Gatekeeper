@@ -4,6 +4,11 @@ on:
   pull_request:
     branches: [ main ]
 
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
 jobs:
   checkov:
     runs-on: ubuntu-latest
@@ -25,7 +30,12 @@ jobs:
 
       - name: Run Checkov and Save JSON Report
         run: |
-          checkov -d . --output json --soft-fail --output-file checkov_reports/report.json || true
+          checkov -d . --output json --soft-fail > checkov_reports/report.json || true
+          # Alternative method if above fails
+          if [ ! -f checkov_reports/report.json ] || [ ! -s checkov_reports/report.json ]; then
+            echo "Trying alternative Checkov command..."
+            checkov --directory . --output json --soft-fail --output-file-path checkov_reports/report.json || true
+          fi
 
       - name: Debug - Check if JSON report exists
         run: |
@@ -61,20 +71,41 @@ jobs:
           path: checkov_reports/report.md
 
       - name: Comment PR with Report
+        if: always()
         uses: actions/github-script@v6
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const fs = require('fs');
             const path = 'checkov_reports/report.md';
             
-            if (fs.existsSync(path)) {
-              const report = fs.readFileSync(path, 'utf8');
-              github.rest.issues.createComment({
-                issue_number: context.issue.number,
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                body: report
-              });
-            } else {
-              console.log('No markdown report found to comment on PR');
+            try {
+              if (fs.existsSync(path)) {
+                const report = fs.readFileSync(path, 'utf8');
+                
+                // Truncate report if it's too long (GitHub has a limit)
+                const maxLength = 65000;
+                const finalReport = report.length > maxLength 
+                  ? report.substring(0, maxLength) + '\n\n... (Report truncated due to length)'
+                  : report;
+                
+                await github.rest.issues.createComment({
+                  issue_number: context.issue.number,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  body: finalReport
+                });
+                console.log('✅ Successfully posted report to PR');
+              } else {
+                await github.rest.issues.createComment({
+                  issue_number: context.issue.number,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  body: '❌ Checkov scan completed but no report was generated. Check the workflow logs for details.'
+                });
+                console.log('⚠️ No markdown report found, posted error message');
+              }
+            } catch (error) {
+              console.log('❌ Error posting comment:', error.message);
+              // Don't fail the entire workflow if commenting fails
             }

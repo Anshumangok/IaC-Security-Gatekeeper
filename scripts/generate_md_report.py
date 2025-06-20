@@ -6,10 +6,34 @@ import sys
 def parse_checkov_report(json_path):
     """Parse Checkov JSON report and generate markdown"""
     
+    # Check if path is a directory (common Checkov issue)
+    if os.path.isdir(json_path):
+        print(f"❌ Error: {json_path} is a directory, not a file")
+        # Try to find JSON files in the directory
+        json_files = [f for f in os.listdir(json_path) if f.endswith('.json')]
+        if json_files:
+            json_path = os.path.join(json_path, json_files[0])
+            print(f"🔍 Found JSON file: {json_path}")
+        else:
+            return generate_error_report(f"Path is a directory with no JSON files: {json_path}")
+    
     # Check if file exists
     if not os.path.exists(json_path):
         print(f"❌ Error: {json_path} not found")
-        return generate_error_report(f"JSON report file not found: {json_path}")
+        # Try alternative paths
+        alternative_paths = [
+            "report.json",
+            "./report.json", 
+            "checkov_reports/checkov_report.json",
+            "results.json"
+        ]
+        for alt_path in alternative_paths:
+            if os.path.exists(alt_path):
+                print(f"🔍 Found alternative path: {alt_path}")
+                json_path = alt_path
+                break
+        else:
+            return generate_error_report(f"JSON report file not found: {json_path}")
     
     try:
         with open(json_path, 'r', encoding='utf-8') as f:
@@ -46,12 +70,16 @@ def parse_checkov_report(json_path):
                 failed_checks = data.get("failed_checks", [])
                 passed_checks = data.get("passed_checks", [])
             # Check if it's a list format
-            elif isinstance(data, list) and len(data) > 0:
-                # Sometimes Checkov returns a list
-                for item in data:
-                    if isinstance(item, dict) and "results" in item:
+        elif isinstance(data, list):
+            # Sometimes Checkov returns a list
+            for item in data:
+                if isinstance(item, dict):
+                    if "results" in item:
                         failed_checks.extend(item["results"].get("failed_checks", []))
                         passed_checks.extend(item["results"].get("passed_checks", []))
+                    elif "failed_checks" in item:
+                        failed_checks.extend(item.get("failed_checks", []))
+                        passed_checks.extend(item.get("passed_checks", []))
         
         print(f"📊 Found {len(failed_checks)} failed checks and {len(passed_checks)} passed checks")
         
