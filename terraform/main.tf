@@ -1,41 +1,49 @@
 resource "aws_s3_bucket" "secure_bucket" {
-  bucket = "my-secure-bucket-an2025"
-  force_destroy = true
+  bucket = "my-secure-bucket"
+
+  versioning {
+    enabled = true
+  }
+
+  logging {
+    target_bucket = "log-bucket"
+    target_prefix = "log/"
+  }
+
+  lifecycle {
+    rule {
+      id      = "expire-logs"
+      enabled = true
+      expiration {
+        days = 30
+      }
+    }
+  }
+
+  replication_configuration {
+    role = "arn:aws:iam::123456789012:role/replication-role"
+    rules {
+      id     = "replication-rule"
+      status = "Enabled"
+
+      destination {
+        bucket        = "arn:aws:s3:::destination-bucket"
+        storage_class = "STANDARD"
+      }
+    }
+  }
+
+  server_side_encryption_configuration {
+    rule {
+      apply_server_side_encryption_by_default {
+        kms_master_key_id = "alias/aws/s3"
+        sse_algorithm     = "aws:kms"
+      }
+    }
+  }
 
   tags = {
     Name        = "Secure Bucket"
-    Environment = "Production"
+    Environment = "Prod"
   }
-}
-
-resource "aws_s3_bucket_acl" "secure_acl" {
-  bucket = aws_s3_bucket.secure_bucket.id
-  acl    = "private"
-}
-
-resource "aws_s3_bucket_versioning" "versioning" {
-  bucket = aws_s3_bucket.secure_bucket.id
-
-  versioning_configuration {
-    status = "Enabled"
-  }
-}
-
-resource "aws_s3_bucket_server_side_encryption_configuration" "sse" {
-  bucket = aws_s3_bucket.secure_bucket.id
-
-  rule {
-    apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
-    }
-  }
-}
-
-resource "aws_s3_bucket_public_access_block" "public_access" {
-  bucket = aws_s3_bucket.secure_bucket.id
-
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
 }

@@ -6,7 +6,7 @@ metadata:
   labels:
     app: nginx
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: nginx
@@ -15,36 +15,38 @@ spec:
       labels:
         app: nginx
     spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 3000
+        fsGroup: 2000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: nginx
-          image: nginx@sha256:ad4d507f7fcb718fbeb44d239f5d2dcbf9842a23f5e3a1a04d847120e3dba6fc  # locked to digest
-          resources:
-            limits:
-              memory: "256Mi"
-              cpu: "500m"
-            requests:
-              memory: "128Mi"
-              cpu: "250m"
+          image: nginx@sha256:6c2...     # use a real digest here
+          imagePullPolicy: IfNotPresent
           securityContext:
-            readOnlyRootFilesystem: true
-            runAsNonRoot: true
             allowPrivilegeEscalation: false
             capabilities:
               drop:
                 - ALL
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "250m"
+            limits:
+              memory: "128Mi"
+              cpu: "500m"
           livenessProbe:
             httpGet:
               path: /
               port: 80
             initialDelaySeconds: 10
-            periodSeconds: 10
+            periodSeconds: 5
           readinessProbe:
             httpGet:
               path: /
               port: 80
             initialDelaySeconds: 5
-            periodSeconds: 5
-      securityContext:
-        seccompProfile:
-          type: RuntimeDefault
-      automountServiceAccountToken: false
+            periodSeconds: 3
