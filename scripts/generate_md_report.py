@@ -107,8 +107,32 @@ def generate_error_report(error_message):
     report += "3. Check file permissions and paths\n"
     return report
 
+def get_severity_emoji(severity):
+    """Get emoji for severity level"""
+    severity_emojis = {
+        'CRITICAL': '🔴',
+        'HIGH': '🟠',
+        'MEDIUM': '🟡',
+        'LOW': '🔵',
+        'INFO': '⚪',
+        'UNKNOWN': '⚫'
+    }
+    return severity_emojis.get(severity.upper(), '⚫')
+
+def truncate_text(text, max_length=50):
+    """Truncate text for table display"""
+    if not text or len(text) <= max_length:
+        return text
+    return text[:max_length-3] + "..."
+
+def extract_filename(file_path):
+    """Extract just the filename from full path"""
+    if not file_path:
+        return "N/A"
+    return os.path.basename(file_path)
+
 def generate_markdown_report(failed_checks, passed_checks):
-    """Generate the main markdown report"""
+    """Generate the main markdown report with table format"""
     report = "# 🛡️ Checkov IaC Security Scan Report\n\n"
     report += f"_Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_\n\n"
     
@@ -123,14 +147,57 @@ def generate_markdown_report(failed_checks, passed_checks):
         report += "Your Infrastructure as Code files are compliant with security best practices.\n\n"
         return report
     
-    # Failed checks section
+    # Failed checks section in table format
     report += f"## ❌ Failed Checks ({len(failed_checks)})\n\n"
     
-    # Group by severity
+    # Create table header
+    report += "| # | Severity | Check ID | Check Name | File | Resource | Lines |\n"
+    report += "|---|----------|----------|------------|------|----------|-------|\n"
+    
+    # Sort failed checks by severity
+    severity_order = {'CRITICAL': 0, 'HIGH': 1, 'MEDIUM': 2, 'LOW': 3, 'INFO': 4, 'UNKNOWN': 5}
+    
+    # Sort checks: first by severity, then by check name
+    sorted_checks = sorted(failed_checks, key=lambda x: (
+        severity_order.get(str(x.get('severity', 'UNKNOWN')).upper(), 5),
+        x.get('check_name', '')
+    ))
+    
+    # Generate table rows
+    for i, check in enumerate(sorted_checks, 1):
+        severity = str(check.get('severity', 'UNKNOWN')).upper()
+        severity_with_emoji = f"{get_severity_emoji(severity)} {severity}"
+        
+        check_id = check.get('check_id', 'N/A')
+        check_name = truncate_text(check.get('check_name', 'Unknown Check'), 40)
+        file_path = extract_filename(check.get('file_path', 'N/A'))
+        resource = truncate_text(check.get('resource', 'N/A'), 30)
+        
+        # Handle line numbers
+        line_info = "N/A"
+        if 'file_line_range' in check and check['file_line_range']:
+            line_range = check['file_line_range']
+            if isinstance(line_range, list) and len(line_range) >= 2:
+                line_info = f"{line_range[0]}-{line_range[1]}"
+        
+        # Add table row
+        report += f"| {i} | {severity_with_emoji} | `{check_id}` | {check_name} | `{file_path}` | {resource} | {line_info} |\n"
+    
+    # Add severity legend
+    report += "\n### 🎯 Severity Legend\n\n"
+    report += "| Severity | Description |\n"
+    report += "|----------|-------------|\n"
+    report += "| 🔴 CRITICAL | Immediate security risk requiring urgent attention |\n"
+    report += "| 🟠 HIGH | Significant security vulnerability |\n"
+    report += "| 🟡 MEDIUM | Moderate security concern |\n"
+    report += "| 🔵 LOW | Minor security improvement |\n"
+    report += "| ⚪ INFO | Informational finding |\n"
+    report += "| ⚫ UNKNOWN | Severity not specified |\n\n"
+    
+    # Group and show detailed information by severity
     severity_groups = {}
     for check in failed_checks:
         severity = check.get('severity', 'UNKNOWN')
-        # Handle None or empty severity values
         if severity is None or severity == '':
             severity = 'UNKNOWN'
         severity = str(severity).upper()
@@ -138,13 +205,16 @@ def generate_markdown_report(failed_checks, passed_checks):
             severity_groups[severity] = []
         severity_groups[severity].append(check)
     
-    # Order by severity (CRITICAL, HIGH, MEDIUM, LOW, etc.)
-    severity_order = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO', 'UNKNOWN']
+    report += "## 📝 Detailed Information\n\n"
     
-    for severity in severity_order:
+    # Order by severity (CRITICAL, HIGH, MEDIUM, LOW, etc.)
+    severity_order_list = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO', 'UNKNOWN']
+    
+    for severity in severity_order_list:
         if severity in severity_groups:
             checks = severity_groups[severity]
-            report += f"### 🚨 {severity} Severity ({len(checks)} issues)\n\n"
+            emoji = get_severity_emoji(severity)
+            report += f"### {emoji} {severity} Severity Issues ({len(checks)})\n\n"
             
             for i, check in enumerate(checks, 1):
                 report += f"#### {i}. {check.get('check_name', 'Unknown Check')}\n\n"
@@ -183,10 +253,11 @@ def generate_markdown_report(failed_checks, passed_checks):
     
     # Add remediation tips
     report += "## 🔧 Remediation Tips\n\n"
-    report += "1. **Review each failed check** and understand the security implications\n"
-    report += "2. **Apply the recommended fixes** based on the guidelines provided\n"
-    report += "3. **Test your changes** in a development environment first\n"
-    report += "4. **Re-run Checkov** to verify fixes\n\n"
+    report += "1. **Prioritize by severity** - Address CRITICAL and HIGH issues first\n"
+    report += "2. **Review each failed check** and understand the security implications\n"
+    report += "3. **Apply the recommended fixes** based on the guidelines provided\n"
+    report += "4. **Test your changes** in a development environment first\n"
+    report += "5. **Re-run Checkov** to verify fixes\n\n"
     
     return report
 
