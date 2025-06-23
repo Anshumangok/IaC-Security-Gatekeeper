@@ -2,6 +2,9 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: nginx-deployment
+  namespace: secure-namespace
+  labels:
+    app: nginx
 spec:
   replicas: 2
   selector:
@@ -13,7 +16,35 @@ spec:
         app: nginx
     spec:
       containers:
-      - name: nginx
-        image: nginx:latest  # ❌ 'latest' tag is risky
-        securityContext:
-          privileged: true   # ❌ Over-privileged container
+        - name: nginx
+          image: nginx@sha256:ad4d507f7fcb718fbeb44d239f5d2dcbf9842a23f5e3a1a04d847120e3dba6fc  # locked to digest
+          resources:
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+            requests:
+              memory: "128Mi"
+              cpu: "250m"
+          securityContext:
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      automountServiceAccountToken: false
