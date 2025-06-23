@@ -1,3 +1,4 @@
+# Secure Kubernetes deployment configuration
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -5,8 +6,9 @@ metadata:
   namespace: secure-namespace
   labels:
     app: nginx
+    version: "1.0"
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: nginx
@@ -14,39 +16,286 @@ spec:
     metadata:
       labels:
         app: nginx
+        version: "1.0"
     spec:
+      # Disable service account token mounting
+      automountServiceAccountToken: false
+      
+      # Pod security context
       securityContext:
-        runAsUser: 1000
-        runAsGroup: 3000
-        fsGroup: 2000
+        runAsUser: 65534          # High UID (nobody user)
+        runAsGroup: 65534         # High GID
+        runAsNonRoot: true        # Ensure non-root
+        fsGroup: 65534
         seccompProfile:
           type: RuntimeDefault
+        supplementalGroups: [65534]
+      
       containers:
         - name: nginx
-          image: nginx@sha256:6c2...     # use a real digest here
-          imagePullPolicy: IfNotPresent
+          # Use specific image digest for security
+          image: nginx:1.25.3@sha256:4c0fdaa8b6341bfdeca5f18f7837462c80cff90527ee35ef185571e1c327beac
+          imagePullPolicy: Always
+          
+          # Container security context
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
               drop:
                 - ALL
             readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          
+          # Resource limits and requests
           resources:
             requests:
               memory: "64Mi"
-              cpu: "250m"
+              cpu: "100m"
+              ephemeral-storage: "1Gi"
             limits:
               memory: "128Mi"
-              cpu: "500m"
+              cpu: "200m"
+              ephemeral-storage: "2Gi"
+          
+          # Port configuration
+          ports:
+            - containerPort: 8080
+              name: http
+              protocol: TCP
+          
+          # Health checks
           livenessProbe:
             httpGet:
               path: /
-              port: 80
-            initialDelaySeconds: 10
-            periodSeconds: 5
+              port: 8080
+              scheme: HTTP
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+            successThreshold: 1
+          
           readinessProbe:
             httpGet:
               path: /
-              port: 80
+              port: 8080
+              scheme: HTTP
             initialDelaySeconds: 5
-            periodSeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+            successThreshold: 1
+          
+          # Startup probe
+          startupProbe:
+            httpGet:
+              path: /
+              port: 8080
+              scheme: HTTP
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 10
+            successThreshold: 1
+          
+          # Volume mounts for writable directories
+          volumeMounts:
+            - name: tmp-volume
+              mountPath: /tmp
+            - name: var-cache-nginx
+              mountPath: /var/cache/nginx
+            - name: var-run
+              mountPath: /var/run
+            - name: nginx-config
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+              readOnly: true
+          
+          # Environment variables
+          env:
+            - name: NGINX_PORT
+              value: "8080"
+      
+      # Volumes
+      volumes:
+        - name: tmp-volume
+          emptyDir:
+            sizeLimit: "1Gi"
+        - name: var-cache-nginx
+          emptyDir:
+            sizeLimit: "1Gi"
+        - name: var-run
+          emptyDir:
+            sizeLimit: "100Mi"
+        - name: nginx-config
+          configMap:
+            name: nginx-config
+            defaultMode: 0444
+
+---
+# ConfigMap for nginx configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-config
+  namespace: secure-namespace
+  labels:
+    app: nginx
+data:
+  nginx.conf: |
+    user  nginx;
+    worker_processes  auto;
+    error_log  /var/log/nginx/error.log notice;
+    pid        /var/run/nginx.pid;
+    
+    events {
+        worker_connections  1024;
+    }
+    
+    http {
+        include       /etc/nginx/mime.types;
+        default_type  application/octet-stream;
+        
+        log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
+                          '$status $body_bytes_sent "$http_referer" '
+                          '"$http_user_agent" "$http_x_forwarded_for"';
+        
+        access_log  /var/log/nginx/access.log  main;
+        
+        sendfile        on;
+        tcp_nopush      on;
+        tcp_nodelay     on;
+        keepalive_timeout  65;
+        types_hash_max_size 2048;
+        
+        # Security headers
+        add_header X-Frame-Options DENY always;
+        add_header X-Content-Type-Options nosniff always;
+        add_header X-XSS-Protection "1; mode=block" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        
+        server {
+            listen       8080;
+            server_name  localhost;
+            
+            location / {
+                root   /usr/share/nginx/html;
+                index  index.html index.htm;
+            }
+            
+            # Security configurations
+            server_tokens off;
+            
+            error_page   500 502 503 504  /50x.html;
+            location = /50x.html {
+                root   /usr/share/nginx/html;
+            }
+        }
+    }
+
+---
+# Service for the deployment
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-service
+  namespace: secure-namespace
+  labels:
+    app: nginx
+spec:
+  type: ClusterIP
+  selector:
+    app: nginx
+  ports:
+    - port: 80
+      targetPort: 8080
+      protocol: TCP
+      name: http
+
+---
+# NetworkPolicy for secure networking
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nginx-network-policy
+  namespace: secure-namespace
+spec:
+  podSelector:
+    matchLabels:
+      app: nginx
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: secure-namespace
+        - podSelector:
+            matchLabels:
+              app: frontend
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    - to: []
+      ports:
+        - protocol: TCP
+          port: 53
+        - protocol: UDP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: kube-system
+      ports:
+        - protocol: TCP
+          port: 443
+
+---
+# PodSecurityPolicy (if still supported in your cluster)
+apiVersion: policy/v1beta1
+kind: PodSecurityPolicy
+metadata:
+  name: secure-psp
+  namespace: secure-namespace
+spec:
+  privileged: false
+  allowPrivilegeEscalation: false
+  requiredDropCapabilities:
+    - ALL
+  volumes:
+    - 'configMap'
+    - 'emptyDir'
+    - 'projected'
+    - 'secret'
+    - 'downwardAPI'
+    - 'persistentVolumeClaim'
+  runAsUser:
+    rule: 'MustRunAsNonRoot'
+  runAsGroup:
+    rule: 'MustRunAs'
+    ranges:
+      - min: 1000
+        max: 65534
+  seLinux:
+    rule: 'RunAsAny'
+  fsGroup:
+    rule: 'RunAsAny'
+
+---
+# PodDisruptionBudget for availability
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: nginx-pdb
+  namespace: secure-namespace
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: nginx
