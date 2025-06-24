@@ -77,12 +77,6 @@ jobs:
         with:
           name: checkov-markdown-report
           path: checkov_reports/report.md
-      
-      - name: Upload Fix S3 Script
-        uses: actions/upload-artifact@v4
-        with:
-          name: fix-s3-script
-          path: scripts/fix_s3_buckets.py
 
       - name: Comment PR with Report
         if: always()
