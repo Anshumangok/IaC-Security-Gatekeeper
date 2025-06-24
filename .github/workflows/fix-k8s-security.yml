@@ -1,0 +1,30 @@
+name: Fix Kubernetes Security Context
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fix-k8s:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      - name: Run Kubernetes security context fixer
+        run: python scripts/fix_k8s_security.py
+
+      - name: Commit and push changes
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add .
+          git commit -m "🛡️ Auto-fixed: Kubernetes securityContext added"
+          git push

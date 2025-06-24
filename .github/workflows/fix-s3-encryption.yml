@@ -1,0 +1,27 @@
+name: Fix S3 Encryption
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fix-encryption:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Run encryption fixer
+        run: python scripts/fix_s3_encryption.py
+
+      - name: Commit and push changes
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add .
+          git commit -m "🔐 Auto-fixed: S3 bucket encryption"
+          git push
