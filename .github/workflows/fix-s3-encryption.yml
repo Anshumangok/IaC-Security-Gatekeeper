@@ -25,3 +25,5 @@ jobs:
           git add .
           git commit -m "🔐 Auto-fixed: S3 bucket encryption"
           git push
+
+#Trigger Github Refresh
