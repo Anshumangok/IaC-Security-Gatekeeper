@@ -1,35 +1,93 @@
-name: Checkov Scan (All IaC Files)
+name: Checkov Scan with Auto-Remediation
 
 on:
   pull_request:
     branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      auto_fix:
+        description: 'Automatically fix issues found by Checkov'
+        required: false
+        default: 'true'
+        type: boolean
 
 permissions:
-  contents: read
+  contents: write
   pull-requests: write
   issues: write
 
 jobs:
-  checkov:
+  checkov-scan-and-fix:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.x'
 
-      - name: Install Checkov
-        run: pip install checkov
+      - name: Install dependencies
+        run: |
+          pip install checkov pyyaml
+          pip install -r requirements.txt || echo "No requirements.txt found, continuing..."
 
       - name: Create reports directory
         run: mkdir -p checkov_reports
 
-      - name: Run Checkov and Save JSON Report
+      - name: Run Initial Checkov Scan
         run: |
+          echo "🔍 Running initial Checkov scan..."
+          checkov -d . --output json --soft-fail > checkov_reports/report_initial.json || true
+          # Alternative method if above fails
+          if [ ! -f checkov_reports/report_initial.json ] || [ ! -s checkov_reports/report_initial.json ]; then
+            echo "Trying alternative Checkov command..."
+            checkov --directory . --output json --soft-fail --output-file-path checkov_reports/report_initial.json || true
+          fi
+
+      - name: Generate Initial Markdown Report
+        run: |
+          echo "📄 Generating initial report..."
+          python scripts/generate_md_report.py
+          if [ -f checkov_reports/report.md ]; then
+            cp checkov_reports/report.md checkov_reports/report_initial.md
+          fi
+
+      - name: Check for Auto-fixable Issues
+        id: check_issues
+        run: |
+          echo "🔍 Checking for auto-fixable security issues..."
+          
+          # Check for S3 encryption issues
+          s3_issues=$(grep -r "aws_s3_bucket" . --include="*.tf" | wc -l || echo "0")
+          echo "Found $s3_issues S3 buckets to check"
+          
+          # Check for K8s security context issues  
+          k8s_issues=$(find . -name "*.yaml" -o -name "*.yml" | xargs grep -l "kind: Deployment\|kind: Pod" | wc -l || echo "0")
+          echo "Found $k8s_issues K8s deployments to check"
+          
+          echo "s3_count=$s3_issues" >> $GITHUB_OUTPUT
+          echo "k8s_count=$k8s_issues" >> $GITHUB_OUTPUT
+
+      - name: Auto-fix S3 Encryption Issues
+        if: steps.check_issues.outputs.s3_count > 0 && (github.event.inputs.auto_fix == 'true' || github.event_name == 'pull_request')
+        run: |
+          echo "🔐 Auto-fixing S3 encryption issues..."
+          python scripts/fix_s3_encryption.py
+
+      - name: Auto-fix Kubernetes Security Context Issues
+        if: steps.check_issues.outputs.k8s_count > 0 && (github.event.inputs.auto_fix == 'true' || github.event_name == 'pull_request')
+        run: |
+          echo "🛡️ Auto-fixing Kubernetes security context issues..."
+          python scripts/fix_k8s_security.py
+
+      - name: Run Post-Fix Checkov Scan
+        run: |
+          echo "🔍 Running post-fix Checkov scan..."
           checkov -d . --output json --soft-fail > checkov_reports/report.json || true
           # Alternative method if above fails
           if [ ! -f checkov_reports/report.json ] || [ ! -s checkov_reports/report.json ]; then
@@ -37,83 +95,164 @@ jobs:
             checkov --directory . --output json --soft-fail --output-file-path checkov_reports/report.json || true
           fi
 
-      - name: Debug - Check if JSON report exists
+      - name: Generate Final Markdown Report
         run: |
-          echo "📁 Contents of checkov_reports after Checkov run:"
-          ls -la checkov_reports/
-          echo "📄 JSON report contents:"
-          cat checkov_reports/report.json || echo "No JSON report found"
+          echo "📄 Generating final security report..."
+          python scripts/generate_md_report.py
 
-      - name: Install Python dependencies
+      - name: Compare Results
         run: |
-          pip install -r requirements.txt || echo "No requirements.txt found, skipping..."
-
-      - name: Generate Markdown report from Checkov JSON output
-        run: |
-          # Try the robust version first, fall back to original if needed
-          if [ -f "scripts/robust_generate_md_report.py" ]; then
-            echo "Using robust report generator..."
-            python scripts/robust_generate_md_report.py
-          else
-            echo "Using original report generator..."
-            python scripts/generate_md_report.py
+          echo "📊 Comparing scan results..."
+          if [ -f checkov_reports/report_initial.json ] && [ -f checkov_reports/report.json ]; then
+            initial_fails=$(jq '.results.failed_checks | length' checkov_reports/report_initial.json 2>/dev/null || echo "0")
+            final_fails=$(jq '.results.failed_checks | length' checkov_reports/report.json 2>/dev/null || echo "0")
+            
+            echo "Initial failed checks: $initial_fails"
+            echo "Final failed checks: $final_fails"
+            echo "Issues fixed: $((initial_fails - final_fails))"
+            
+            echo "initial_fails=$initial_fails" >> $GITHUB_ENV
+            echo "final_fails=$final_fails" >> $GITHUB_ENV
+            echo "fixes_applied=$((initial_fails - final_fails))" >> $GITHUB_ENV
           fi
 
-      - name: Debug - Check if Markdown report exists
+      - name: Commit Auto-fixes
+        if: github.event_name == 'pull_request'
         run: |
-          echo "📁 Contents of checkov_reports after Markdown generation:"
-          ls -la checkov_reports/
-          echo "📄 Markdown report contents:"
-          cat checkov_reports/report.md || echo "No Markdown report found"
+          git config user.name "checkov-auto-fix-bot"
+          git config user.email "security-bot@github.com"
+          
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "🔧 Committing auto-fixes..."
+            git add .
+            git commit -m "🛡️ Auto-fix: Security issues resolved by Checkov bot
 
-      - name: Upload Checkov JSON Report
+            - Fixed S3 encryption configurations
+            - Added Kubernetes security contexts
+            - Resolved ${{ env.fixes_applied }} security findings
+            
+            Scan Results:
+            - Before: ${{ env.initial_fails }} failed checks
+            - After: ${{ env.final_fails }} failed checks"
+            
+            git push
+            echo "✅ Auto-fixes committed and pushed"
+          else
+            echo "ℹ️ No changes to commit"
+          fi
+
+      - name: Upload Reports
         uses: actions/upload-artifact@v4
         with:
-          name: checkov-json-report
-          path: checkov_reports/report.json
+          name: checkov-reports
+          path: checkov_reports/
 
-      - name: Upload Markdown report
-        uses: actions/upload-artifact@v4
-        with:
-          name: checkov-markdown-report
-          path: checkov_reports/report.md
-
-      - name: Comment PR with Report
-        if: always()
+      - name: Comment PR with Results
+        if: github.event_name == 'pull_request'
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const fs = require('fs');
-            const path = 'checkov_reports/report.md';
+            const reportPath = 'checkov_reports/report.md';
             
             try {
-              if (fs.existsSync(path)) {
-                const report = fs.readFileSync(path, 'utf8');
+              let reportContent = '';
+              
+              if (fs.existsSync(reportPath)) {
+                const report = fs.readFileSync(reportPath, 'utf8');
                 
-                // Truncate report if it's too long (GitHub has a limit)
+                // Add summary header with auto-fix results
+                const summaryHeader = `# 🛡️ Checkov Security Scan Results
+            
+            **Auto-Remediation Summary:**
+            - 🔍 Initial Issues: ${{ env.initial_fails || 'N/A' }}
+            - ✅ Issues Fixed: ${{ env.fixes_applied || '0' }}  
+            - ❌ Remaining Issues: ${{ env.final_fails || 'N/A' }}
+            
+            ${process.env.fixes_applied > 0 ? '🎉 **Auto-fixes have been applied and committed to this PR!**' : ''}
+            
+            ---
+            
+            `;
+                
+                reportContent = summaryHeader + report;
+                
+                // Truncate if too long
                 const maxLength = 65000;
-                const finalReport = report.length > maxLength 
-                  ? report.substring(0, maxLength) + '\n\n... (Report truncated due to length)'
-                  : report;
-                
-                await github.rest.issues.createComment({
-                  issue_number: context.issue.number,
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  body: finalReport
-                });
-                console.log('✅ Successfully posted report to PR');
+                if (reportContent.length > maxLength) {
+                  reportContent = reportContent.substring(0, maxLength) + '\n\n... (Report truncated due to length)';
+                }
               } else {
-                await github.rest.issues.createComment({
-                  issue_number: context.issue.number,
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  body: '❌ Checkov scan completed but no report was generated. Check the workflow logs for details.'
-                });
-                console.log('⚠️ No markdown report found, posted error message');
+                reportContent = `# ❌ Checkov Scan Error
+            
+            Checkov scan completed but no report was generated. Please check the workflow logs for details.
+            
+            **Auto-fix Summary:**
+            - Attempted to fix S3 encryption issues: ${{ steps.check_issues.outputs.s3_count }} buckets checked
+            - Attempted to fix K8s security contexts: ${{ steps.check_issues.outputs.k8s_count }} deployments checked`;
               }
+              
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: reportContent
+              });
+              
+              console.log('✅ Successfully posted security report to PR');
+              
             } catch (error) {
               console.log('❌ Error posting comment:', error.message);
-              // Don't fail the entire workflow if commenting fails
+            }
+
+      - name: Create Issue for Remaining Problems
+        if: env.final_fails > 0 && github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            
+            if (fs.existsSync('checkov_reports/report.md')) {
+              const report = fs.readFileSync('checkov_reports/report.md', 'utf8');
+              
+              // Extract failed checks for issue
+              const failedSection = report.match(/## ❌ Failed Checks.*?(?=##|$)/s);
+              const failedContent = failedSection ? failedSection[0] : 'See full report in PR comments.';
+              
+              const issueBody = `# 🚨 Security Issues Require Manual Attention
+            
+            The automated security scan found **${{ env.final_fails }} issues** that could not be auto-fixed.
+            
+            **PR**: #${{ github.event.number }}
+            **Branch**: ${{ github.head_ref }}
+            **Commit**: ${{ github.sha }}
+            
+            ## Issues Found
+            
+            ${failedContent}
+            
+            ## Next Steps
+            
+            1. Review the failed security checks above
+            2. Implement the recommended fixes manually  
+            3. Test your changes
+            4. Re-run the security scan to verify fixes
+            
+            ## Auto-Fix Status
+            - ✅ **Fixed**: ${{ env.fixes_applied }} issues
+            - ❌ **Remaining**: ${{ env.final_fails }} issues (require manual attention)
+            
+            _This issue was automatically created by the security scanning workflow._`;
+              
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: `🚨 Security Issues Found in PR #${{ github.event.number }} - Manual Fix Required`,
+                body: issueBody,
+                labels: ['security', 'checkov', 'manual-fix-required']
+              });
+              
+              console.log('✅ Created issue for remaining security problems');
             }
