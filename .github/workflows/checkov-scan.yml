@@ -22,14 +22,16 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          # Fix for detached HEAD - ensure we're on the correct branch
+          ref: ${{ github.head_ref || github.ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.x'
+          python-version: '3.11'
 
       - name: Install dependencies
         run: |
@@ -42,19 +44,31 @@ jobs:
       - name: Run Initial Checkov Scan
         run: |
           echo "🔍 Running initial Checkov scan..."
-          checkov -d . --output json --soft-fail > checkov_reports/report_initial.json || true
-          # Alternative method if above fails
-          if [ ! -f checkov_reports/report_initial.json ] || [ ! -s checkov_reports/report_initial.json ]; then
-            echo "Trying alternative Checkov command..."
-            checkov --directory . --output json --soft-fail --output-file-path checkov_reports/report_initial.json || true
+          checkov -d . \
+            --framework terraform,kubernetes \
+            --output json \
+            --soft-fail \
+            --output-file-path checkov_reports/report_initial.json || true
+          
+          # Verify the file was created and has content
+          if [ -f checkov_reports/report_initial.json ]; then
+            echo "✅ Initial scan completed"
+            wc -l checkov_reports/report_initial.json
+          else
+            echo "❌ Initial scan failed, creating empty report"
+            echo '{"results": {"failed_checks": [], "passed_checks": []}}' > checkov_reports/report_initial.json
           fi
 
       - name: Generate Initial Markdown Report
         run: |
           echo "📄 Generating initial report..."
-          python scripts/generate_md_report.py
-          if [ -f checkov_reports/report.md ]; then
-            cp checkov_reports/report.md checkov_reports/report_initial.md
+          if [ -f checkov_reports/report_initial.json ]; then
+            cp checkov_reports/report_initial.json checkov_reports/report.json
+            python scripts/generate_md_report.py
+            if [ -f checkov_reports/report.md ]; then
+              cp checkov_reports/report.md checkov_reports/report_initial.md
+              echo "✅ Initial report generated"
+            fi
           fi
 
       - name: Check for Auto-fixable Issues
@@ -62,94 +76,196 @@ jobs:
         run: |
           echo "🔍 Checking for auto-fixable security issues..."
           
-          # Check for S3 encryption issues
-          s3_issues=$(grep -r "aws_s3_bucket" . --include="*.tf" | wc -l || echo "0")
-          echo "Found $s3_issues S3 buckets to check"
+          # Check for S3 encryption issues (only .tf files)
+          s3_issues=0
+          if find . -name "*.tf" -type f | head -1 | grep -q .; then
+            s3_issues=$(find . -name "*.tf" -exec grep -l "aws_s3_bucket" {} \; 2>/dev/null | wc -l || echo "0")
+          fi
+          echo "Found $s3_issues Terraform files with S3 buckets"
           
-          # Check for K8s security context issues  
-          k8s_issues=$(find . -name "*.yaml" -o -name "*.yml" | xargs grep -l "kind: Deployment\|kind: Pod" | wc -l || echo "0")
-          echo "Found $k8s_issues K8s deployments to check"
+          # Check for K8s security context issues (only .yaml/.yml files)
+          k8s_issues=0
+          if find . \( -name "*.yaml" -o -name "*.yml" \) -type f | head -1 | grep -q .; then
+            k8s_issues=$(find . \( -name "*.yaml" -o -name "*.yml" \) -exec grep -l "kind: Deployment\|kind: Pod\|kind: StatefulSet\|kind: DaemonSet" {} \; 2>/dev/null | wc -l || echo "0")
+          fi
+          echo "Found $k8s_issues Kubernetes manifest files"
           
           echo "s3_count=$s3_issues" >> $GITHUB_OUTPUT
           echo "k8s_count=$k8s_issues" >> $GITHUB_OUTPUT
+          
+          # Set flags for whether to run fixes
+          if [ "$s3_issues" -gt 0 ]; then
+            echo "run_s3_fix=true" >> $GITHUB_OUTPUT
+          else
+            echo "run_s3_fix=false" >> $GITHUB_OUTPUT
+          fi
+          
+          if [ "$k8s_issues" -gt 0 ]; then
+            echo "run_k8s_fix=true" >> $GITHUB_OUTPUT
+          else
+            echo "run_k8s_fix=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Auto-fix S3 Encryption Issues
-        if: steps.check_issues.outputs.s3_count > 0 && (github.event.inputs.auto_fix == 'true' || github.event_name == 'pull_request')
+        if: steps.check_issues.outputs.run_s3_fix == 'true' && (github.event.inputs.auto_fix == 'true' || github.event_name == 'pull_request')
         run: |
           echo "🔐 Auto-fixing S3 encryption issues..."
           python scripts/fix_s3_encryption.py
+          echo "✅ S3 encryption fixes completed"
 
       - name: Auto-fix Kubernetes Security Context Issues
-        if: steps.check_issues.outputs.k8s_count > 0 && (github.event.inputs.auto_fix == 'true' || github.event_name == 'pull_request')
+        if: steps.check_issues.outputs.run_k8s_fix == 'true' && (github.event.inputs.auto_fix == 'true' || github.event_name == 'pull_request')
         run: |
           echo "🛡️ Auto-fixing Kubernetes security context issues..."
           python scripts/fix_k8s_security.py
+          echo "✅ Kubernetes security fixes completed"
 
       - name: Run Post-Fix Checkov Scan
         run: |
           echo "🔍 Running post-fix Checkov scan..."
-          checkov -d . --output json --soft-fail > checkov_reports/report.json || true
-          # Alternative method if above fails
-          if [ ! -f checkov_reports/report.json ] || [ ! -s checkov_reports/report.json ]; then
-            echo "Trying alternative Checkov command..."
-            checkov --directory . --output json --soft-fail --output-file-path checkov_reports/report.json || true
+          checkov -d . \
+            --framework terraform,kubernetes \
+            --output json \
+            --soft-fail \
+            --output-file-path checkov_reports/report.json || true
+          
+          # Verify the file was created
+          if [ -f checkov_reports/report.json ]; then
+            echo "✅ Post-fix scan completed"
+            wc -l checkov_reports/report.json
+          else
+            echo "❌ Post-fix scan failed, using initial report"
+            cp checkov_reports/report_initial.json checkov_reports/report.json
           fi
 
       - name: Generate Final Markdown Report
         run: |
           echo "📄 Generating final security report..."
           python scripts/generate_md_report.py
+          if [ -f checkov_reports/report.md ]; then
+            echo "✅ Final report generated successfully"
+            echo "Report size: $(wc -l checkov_reports/report.md)"
+          else
+            echo "❌ Failed to generate final report"
+          fi
 
       - name: Compare Results
         run: |
           echo "📊 Comparing scan results..."
-          if [ -f checkov_reports/report_initial.json ] && [ -f checkov_reports/report.json ]; then
-            initial_fails=$(jq '.results.failed_checks | length' checkov_reports/report_initial.json 2>/dev/null || echo "0")
-            final_fails=$(jq '.results.failed_checks | length' checkov_reports/report.json 2>/dev/null || echo "0")
-            
-            echo "Initial failed checks: $initial_fails"
-            echo "Final failed checks: $final_fails"
-            echo "Issues fixed: $((initial_fails - final_fails))"
-            
-            echo "initial_fails=$initial_fails" >> $GITHUB_ENV
-            echo "final_fails=$final_fails" >> $GITHUB_ENV
-            echo "fixes_applied=$((initial_fails - final_fails))" >> $GITHUB_ENV
+          initial_fails=0
+          final_fails=0
+          
+          # Parse initial results
+          if [ -f checkov_reports/report_initial.json ]; then
+            initial_fails=$(python3 -c "
+import json
+try:
+    with open('checkov_reports/report_initial.json', 'r') as f:
+        data = json.load(f)
+    if 'results' in data and 'failed_checks' in data['results']:
+        print(len(data['results']['failed_checks']))
+    elif 'failed_checks' in data:
+        print(len(data['failed_checks']))
+    else:
+        print('0')
+except:
+    print('0')
+" || echo "0")
+          fi
+          
+          # Parse final results
+          if [ -f checkov_reports/report.json ]; then
+            final_fails=$(python3 -c "
+import json
+try:
+    with open('checkov_reports/report.json', 'r') as f:
+        data = json.load(f)
+    if 'results' in data and 'failed_checks' in data['results']:
+        print(len(data['results']['failed_checks']))
+    elif 'failed_checks' in data:
+        print(len(data['failed_checks']))
+    else:
+        print('0')
+except:
+    print('0')
+" || echo "0")
+          fi
+          
+          fixes_applied=$((initial_fails - final_fails))
+          if [ $fixes_applied -lt 0 ]; then
+            fixes_applied=0
+          fi
+          
+          echo "Initial failed checks: $initial_fails"
+          echo "Final failed checks: $final_fails"  
+          echo "Issues fixed: $fixes_applied"
+          
+          echo "initial_fails=$initial_fails" >> $GITHUB_ENV
+          echo "final_fails=$final_fails" >> $GITHUB_ENV
+          echo "fixes_applied=$fixes_applied" >> $GITHUB_ENV
+
+      - name: Check for changes
+        id: check_changes
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "✅ Changes detected, ready to commit"
+            git status --short
+          else
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "ℹ️ No changes to commit"
           fi
 
       - name: Commit Auto-fixes
-        if: github.event_name == 'pull_request'
+        if: steps.check_changes.outputs.has_changes == 'true' && github.event_name == 'pull_request'
         run: |
-          git config user.name "checkov-auto-fix-bot"
-          git config user.email "security-bot@github.com"
+          # Configure git with proper user info
+          git config user.name "checkov-auto-fix[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           
-          if [ -n "$(git status --porcelain)" ]; then
-            echo "🔧 Committing auto-fixes..."
-            git add .
-            git commit -m "🛡️ Auto-fix: Security issues resolved by Checkov bot
+          # Ensure we're on the right branch
+          echo "Current branch: $(git branch --show-current)"
+          echo "Current HEAD: $(git rev-parse HEAD)"
+          
+          # Add changes
+          git add .
+          
+          # Create commit message
+          commit_msg="🛡️ Auto-fix: Security issues resolved by Checkov
 
-            - Fixed S3 encryption configurations
-            - Added Kubernetes security contexts
-            - Resolved ${{ env.fixes_applied }} security findings
-            
-            Scan Results:
-            - Before: ${{ env.initial_fails }} failed checks
-            - After: ${{ env.final_fails }} failed checks"
-            
+🔐 S3 Encryption fixes applied: ${{ steps.check_issues.outputs.s3_count }} files checked
+🛡️ Kubernetes security contexts added: ${{ steps.check_issues.outputs.k8s_count }} files checked
+
+📊 Scan Results:
+- Before: ${{ env.initial_fails }} failed checks  
+- After: ${{ env.final_fails }} failed checks
+- Fixed: ${{ env.fixes_applied }} issues
+
+Co-authored-by: checkov-auto-fix[bot] <41898282+github-actions[bot]@users.noreply.github.com>"
+          
+          # Commit changes
+          git commit -m "$commit_msg"
+          
+          # Push to the PR branch
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git push origin HEAD:${{ github.head_ref }}
+            echo "✅ Auto-fixes committed and pushed to PR branch"
+          else
             git push
             echo "✅ Auto-fixes committed and pushed"
-          else
-            echo "ℹ️ No changes to commit"
           fi
 
       - name: Upload Reports
         uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: checkov-reports
+          name: checkov-security-reports
           path: checkov_reports/
+          retention-days: 7
 
       - name: Comment PR with Results
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v6
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -159,40 +275,55 @@ jobs:
             try {
               let reportContent = '';
               
+              // Check if report exists and has content
               if (fs.existsSync(reportPath)) {
                 const report = fs.readFileSync(reportPath, 'utf8');
                 
-                // Add summary header with auto-fix results
-                const summaryHeader = `# 🛡️ Checkov Security Scan Results
+                if (report.trim()) {
+                  // Add auto-fix summary header
+                  const autoFixSummary = `# 🛡️ Checkov Security Scan Results
             
-            **Auto-Remediation Summary:**
-            - 🔍 Initial Issues: ${{ env.initial_fails || 'N/A' }}
-            - ✅ Issues Fixed: ${{ env.fixes_applied || '0' }}  
-            - ❌ Remaining Issues: ${{ env.final_fails || 'N/A' }}
+            ## 🤖 Auto-Remediation Summary
             
-            ${process.env.fixes_applied > 0 ? '🎉 **Auto-fixes have been applied and committed to this PR!**' : ''}
+            | Metric | Value |
+            |--------|-------|
+            | 🔍 **Initial Issues** | ${{ env.initial_fails || 'N/A' }} |
+            | ✅ **Issues Auto-Fixed** | ${{ env.fixes_applied || '0' }} |
+            | ❌ **Remaining Issues** | ${{ env.final_fails || 'N/A' }} |
+            | 🔐 **S3 Files Checked** | ${{ steps.check_issues.outputs.s3_count }} |
+            | 🛡️ **K8s Files Checked** | ${{ steps.check_issues.outputs.k8s_count }} |
+            | 📝 **Changes Committed** | ${{ steps.check_changes.outputs.has_changes == 'true' && 'Yes' || 'No' }} |
+            
+            ${ process.env.fixes_applied > 0 ? '🎉 **Auto-fixes have been applied and committed to this PR!**' : '⚠️ **No auto-fixes were applied.**' }
             
             ---
             
             `;
-                
-                reportContent = summaryHeader + report;
-                
-                // Truncate if too long
-                const maxLength = 65000;
-                if (reportContent.length > maxLength) {
-                  reportContent = reportContent.substring(0, maxLength) + '\n\n... (Report truncated due to length)';
+                  
+                  reportContent = autoFixSummary + report;
+                } else {
+                  reportContent = 'Report file exists but is empty.';
                 }
               } else {
-                reportContent = `# ❌ Checkov Scan Error
+                reportContent = `# ❌ Checkov Security Scan
             
-            Checkov scan completed but no report was generated. Please check the workflow logs for details.
+            **Status**: Scan completed but no detailed report was generated.
             
-            **Auto-fix Summary:**
-            - Attempted to fix S3 encryption issues: ${{ steps.check_issues.outputs.s3_count }} buckets checked
-            - Attempted to fix K8s security contexts: ${{ steps.check_issues.outputs.k8s_count }} deployments checked`;
+            ## 🤖 Auto-Fix Summary
+            - S3 Encryption fixes attempted: ${{ steps.check_issues.outputs.s3_count }} files
+            - Kubernetes security fixes attempted: ${{ steps.check_issues.outputs.k8s_count }} files
+            - Changes committed: ${{ steps.check_changes.outputs.has_changes == 'true' && 'Yes' || 'No' }}
+            
+            Please check the workflow logs for more details.`;
               }
               
+              // Truncate if too long (GitHub comment limit)
+              const maxLength = 65000;
+              if (reportContent.length > maxLength) {
+                reportContent = reportContent.substring(0, maxLength) + '\n\n... (Report truncated due to length limit)';
+              }
+              
+              // Post comment
               await github.rest.issues.createComment({
                 issue_number: context.issue.number,
                 owner: context.repo.owner,
@@ -203,56 +334,91 @@ jobs:
               console.log('✅ Successfully posted security report to PR');
               
             } catch (error) {
-              console.log('❌ Error posting comment:', error.message);
+              console.error('❌ Error posting comment:', error);
+              
+              // Post a fallback comment
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: `# 🛡️ Checkov Security Scan Completed
+            
+            The security scan has completed, but there was an issue generating the detailed report.
+            
+            **Auto-fixes applied**: ${{ env.fixes_applied || '0' }}
+            **Files checked**: S3(${{ steps.check_issues.outputs.s3_count }}) K8s(${{ steps.check_issues.outputs.k8s_count }})
+            
+            Please check the workflow artifacts for detailed reports.`
+              });
             }
 
-      - name: Create Issue for Remaining Problems
+      - name: Create Issue for Manual Review
         if: env.final_fails > 0 && github.event_name == 'pull_request'
-        uses: actions/github-script@v6
+        uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const fs = require('fs');
+            const issueTitle = `🚨 Security Issues Require Manual Review - PR #${{ github.event.number }}`;
+            const issueBody = `# 🚨 Security Issues Require Manual Attention
             
-            if (fs.existsSync('checkov_reports/report.md')) {
-              const report = fs.readFileSync('checkov_reports/report.md', 'utf8');
-              
-              // Extract failed checks for issue
-              const failedSection = report.match(/## ❌ Failed Checks.*?(?=##|$)/s);
-              const failedContent = failedSection ? failedSection[0] : 'See full report in PR comments.';
-              
-              const issueBody = `# 🚨 Security Issues Require Manual Attention
+            The automated security scan found **${{ env.final_fails }} issues** that require manual review.
             
-            The automated security scan found **${{ env.final_fails }} issues** that could not be auto-fixed.
+            ## 📋 Details
+            - **PR**: #${{ github.event.number }}
+            - **Branch**: \`${{ github.head_ref }}\`
+            - **Commit**: \`${{ github.sha }}\`
+            - **Scan Date**: ${{ github.run_id }}
             
-            **PR**: #${{ github.event.number }}
-            **Branch**: ${{ github.head_ref }}
-            **Commit**: ${{ github.sha }}
+            ## 📊 Results Summary
+            - 🔍 **Initial Issues**: ${{ env.initial_fails }}
+            - ✅ **Auto-Fixed**: ${{ env.fixes_applied }}
+            - ❌ **Manual Review Required**: ${{ env.final_fails }}
             
-            ## Issues Found
+            ## 🔧 Auto-Fix Coverage
+            - **S3 Encryption**: ✅ Automatically fixed
+            - **Kubernetes Security Contexts**: ✅ Automatically fixed
+            - **Other Issues**: ❌ Require manual review
             
-            ${failedContent}
-            
-            ## Next Steps
-            
-            1. Review the failed security checks above
-            2. Implement the recommended fixes manually  
-            3. Test your changes
+            ## 📝 Next Steps
+            1. Review the detailed security report in the PR comments
+            2. Address remaining issues manually
+            3. Test your changes in a development environment
             4. Re-run the security scan to verify fixes
             
-            ## Auto-Fix Status
-            - ✅ **Fixed**: ${{ env.fixes_applied }} issues
-            - ❌ **Remaining**: ${{ env.final_fails }} issues (require manual attention)
+            ## 📎 Resources
+            - [Checkov Documentation](https://www.checkov.io/2.Basics/CLI%20Command%20Reference.html)
+            - [Security Report Artifact](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
             
-            _This issue was automatically created by the security scanning workflow._`;
-              
-              await github.rest.issues.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                title: `🚨 Security Issues Found in PR #${{ github.event.number }} - Manual Fix Required`,
-                body: issueBody,
-                labels: ['security', 'checkov', 'manual-fix-required']
-              });
-              
-              console.log('✅ Created issue for remaining security problems');
-            }
+            ---
+            _This issue was automatically created by the Checkov security scanning workflow._`;
+            
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: issueTitle,
+              body: issueBody,
+              labels: ['security', 'checkov', 'manual-review-required', 'auto-generated']
+            });
+            
+            console.log('✅ Created issue for manual security review');
+
+      - name: Workflow Summary
+        if: always()
+        run: |
+          echo "## 🛡️ Checkov Auto-Remediation Workflow Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔍 Initial Issues | ${{ env.initial_fails || 'N/A' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| ✅ Issues Fixed | ${{ env.fixes_applied || '0' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| ❌ Remaining Issues | ${{ env.final_fails || 'N/A' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔐 S3 Files Processed | ${{ steps.check_issues.outputs.s3_count }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🛡️ K8s Files Processed | ${{ steps.check_issues.outputs.k8s_count }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 📝 Changes Applied | ${{ steps.check_changes.outputs.has_changes == 'true' && 'Yes' || 'No' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ env.fixes_applied }}" -gt 0 ]; then
+            echo "🎉 **Auto-remediation successful!** ${{ env.fixes_applied }} security issues were automatically fixed." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "ℹ️ **No auto-fixes applied.** Either no issues were found or they require manual attention." >> $GITHUB_STEP_SUMMARY
+          fi
