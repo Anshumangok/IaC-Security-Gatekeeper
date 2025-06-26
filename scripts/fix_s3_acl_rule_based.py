@@ -26,7 +26,7 @@ def extract_comment_near_acl(lines, index):
         line = lines[i].strip()
         if line.startswith("#"):
             return line
-        if line:
+        if line:  # stop if not comment
             break
     return ""
 
