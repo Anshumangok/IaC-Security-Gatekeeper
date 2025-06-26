@@ -1,0 +1,25 @@
+name: Fix Public S3 Buckets (Rule-Based)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fix-acl:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Run ACL Fixer
+        run: |
+          python scripts/fix_s3_acl_rule_based.py
+
+      - name: Upload Fix Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fixed-s3-buckets
+          path: fix_artifacts/
