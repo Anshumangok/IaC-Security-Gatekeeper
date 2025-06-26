@@ -1,356 +1,386 @@
+#!/usr/bin/env python3
+"""
+S3 Security Remediation Script
+Automatically fixes S3 bucket security misconfigurations in Terraform files.
+"""
+
 import os
-import re
 import json
+import re
+import shutil
+from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Tuple, Optional
+import argparse
 
-SOURCE_DIR = "terraform"
-OUTPUT_DIR = "fix_artifacts"
-REPORT_FILE = "s3_remediation_report.md"
-
-# Enhanced detection patterns for intentional public buckets
-PUBLIC_INDICATORS = {
-    "name_keywords": ["public", "cdn", "static", "assets", "website", "web", "frontend", "ui"],
-    "tag_keys": ["public", "website", "cdn", "static", "web-hosting", "frontend"],
-    "tag_values": ["public", "website", "static-hosting", "cdn", "web"],
-    "comment_keywords": ["hosting", "public use", "cdn", "static hosting", "website", "web assets", "frontend"]
-}
-
-# Security policies for different bucket types
-SECURITY_POLICIES = {
-    "private": {
-        "acl": "private",
-        "public_access_block": True,
-        "requires_ssl": True
-    },
-    "public_read": {
-        "acl": "public-read",
-        "public_access_block": False,
-        "requires_ssl": True
-    }
-}
-
-class S3BucketAnalyzer:
-    def __init__(self):
-        self.analysis_results = []
-        self.fixed_files = []
+class S3SecurityRemediator:
+    def __init__(self, source_dir="terraform", dry_run=True):
+        self.source_dir = Path(source_dir)
+        self.dry_run = dry_run
+        self.fix_artifacts_dir = Path("fix_artifacts")
+        self.fixes_applied = []
+        self.issues_found = []
         
-    def has_public_acl(self, content: str) -> bool:
-        """Check if content has public ACL configuration"""
-        patterns = [
-            r'acl\s*=\s*"public-read(-write)?"',
-            r'acl\s*=\s*"authenticated-read"',
-            r'grant.*uri.*AllUsers'
-        ]
-        return any(re.search(pattern, content, re.IGNORECASE) for pattern in patterns)
+        # Ensure fix artifacts directory exists
+        self.fix_artifacts_dir.mkdir(exist_ok=True)
+        
+    def scan_terraform_files(self):
+        """Scan for Terraform files with S3 bucket configurations."""
+        tf_files = []
+        for file_path in self.source_dir.rglob("*.tf"):
+            if file_path.is_file():
+                tf_files.append(file_path)
+        return tf_files
     
-    def extract_bucket_config(self, content: str) -> Dict:
-        """Extract bucket configuration details"""
-        config = {
-            "name": "unknown",
-            "acl": None,
-            "tags": {},
-            "comments": [],
-            "has_public_access_block": False,
-            "has_bucket_policy": False
-        }
-        
-        # Extract bucket name
-        name_match = re.search(r'resource\s+"aws_s3_bucket"\s+"([^"]+)"', content)
-        if name_match:
-            config["name"] = name_match.group(1)
-        
-        # Extract ACL
-        acl_match = re.search(r'acl\s*=\s*"([^"]+)"', content)
-        if acl_match:
-            config["acl"] = acl_match.group(1)
-        
-        # Extract tags
-        tags_match = re.search(r'tags\s*=\s*{([^}]+)}', content, re.DOTALL)
-        if tags_match:
-            tags_content = tags_match.group(1)
-            tag_pairs = re.findall(r'(\w+)\s*=\s*"([^"]+)"', tags_content)
-            config["tags"] = {k: v for k, v in tag_pairs}
-        
-        # Check for public access block
-        config["has_public_access_block"] = bool(re.search(r'aws_s3_bucket_public_access_block', content))
-        
-        # Check for bucket policy
-        config["has_bucket_policy"] = bool(re.search(r'aws_s3_bucket_policy', content))
-        
-        return config
-    
-    def extract_comments_near_resource(self, lines: List[str], resource_line: int) -> List[str]:
-        """Extract comments near the resource definition"""
-        comments = []
-        
-        # Look backwards for comments
-        for i in range(resource_line - 1, max(-1, resource_line - 10), -1):
-            line = lines[i].strip()
-            if line.startswith("#"):
-                comments.insert(0, line[1:].strip())
-            elif line and not line.isspace():
-                break
-        
-        # Look forwards for inline comments
-        for i in range(resource_line, min(len(lines), resource_line + 20)):
-            line = lines[i]
-            if "#" in line:
-                comment_part = line.split("#", 1)[1].strip()
-                if comment_part:
-                    comments.append(comment_part)
-        
-        return comments
-    
-    def analyze_intent(self, bucket_name: str, tags: Dict, comments: List[str]) -> Tuple[bool, str, List[str]]:
-        """Analyze if the bucket is intentionally public"""
-        reasons = []
-        is_intentional = False
-        
-        # Check bucket name
-        name_lower = bucket_name.lower()
-        for keyword in PUBLIC_INDICATORS["name_keywords"]:
-            if keyword in name_lower:
-                reasons.append(f"Bucket name contains '{keyword}'")
-                is_intentional = True
-        
-        # Check tags
-        for tag_key, tag_value in tags.items():
-            key_lower, value_lower = tag_key.lower(), tag_value.lower()
-            
-            if key_lower in PUBLIC_INDICATORS["tag_keys"]:
-                reasons.append(f"Tag key '{tag_key}' indicates public use")
-                is_intentional = True
-            
-            if value_lower in PUBLIC_INDICATORS["tag_values"]:
-                reasons.append(f"Tag value '{tag_value}' indicates public use")
-                is_intentional = True
-        
-        # Check comments
-        comment_text = " ".join(comments).lower()
-        for keyword in PUBLIC_INDICATORS["comment_keywords"]:
-            if keyword in comment_text:
-                reasons.append(f"Comments mention '{keyword}'")
-                is_intentional = True
-        
-        confidence = "high" if len(reasons) >= 2 else "medium" if len(reasons) == 1 else "low"
-        
-        return is_intentional, confidence, reasons
-    
-    def generate_secure_config(self, original_config: Dict, is_public: bool) -> str:
-        """Generate secure Terraform configuration"""
-        policy = SECURITY_POLICIES["public_read" if is_public else "private"]
-        bucket_name = original_config["name"]
-        
-        config_lines = []
-        
-        # Main bucket resource
-        config_lines.append(f'resource "aws_s3_bucket" "{bucket_name}" {{')
-        config_lines.append(f'  bucket = "{bucket_name}"')
-        
-        # Add original tags plus security tags
-        tags = original_config["tags"].copy()
-        tags["ManagedBy"] = "SecurityGatekeeper"
-        tags["LastRemediated"] = datetime.now().strftime("%Y-%m-%d")
-        
-        if tags:
-            config_lines.append('  tags = {')
-            for key, value in tags.items():
-                config_lines.append(f'    {key} = "{value}"')
-            config_lines.append('  }')
-        
-        config_lines.append('}')
-        config_lines.append('')
-        
-        # ACL resource (separate as per AWS provider v4+)
-        config_lines.append(f'resource "aws_s3_bucket_acl" "{bucket_name}_acl" {{')
-        config_lines.append(f'  bucket = aws_s3_bucket.{bucket_name}.id')
-        config_lines.append(f'  acl    = "{policy["acl"]}"')
-        config_lines.append('}')
-        config_lines.append('')
-        
-        # Public access block (always recommended)
-        if policy["public_access_block"]:
-            config_lines.append(f'resource "aws_s3_bucket_public_access_block" "{bucket_name}_pab" {{')
-            config_lines.append(f'  bucket = aws_s3_bucket.{bucket_name}.id')
-            config_lines.append('')
-            config_lines.append('  block_public_acls       = true')
-            config_lines.append('  block_public_policy     = true')
-            config_lines.append('  ignore_public_acls      = true')
-            config_lines.append('  restrict_public_buckets = true')
-            config_lines.append('}')
-            config_lines.append('')
-        
-        # Server-side encryption
-        config_lines.append(f'resource "aws_s3_bucket_server_side_encryption_configuration" "{bucket_name}_encryption" {{')
-        config_lines.append(f'  bucket = aws_s3_bucket.{bucket_name}.id')
-        config_lines.append('')
-        config_lines.append('  rule {')
-        config_lines.append('    apply_server_side_encryption_by_default {')
-        config_lines.append('      sse_algorithm = "AES256"')
-        config_lines.append('    }')
-        config_lines.append('  }')
-        config_lines.append('}')
-        config_lines.append('')
-        
-        # Versioning
-        config_lines.append(f'resource "aws_s3_bucket_versioning" "{bucket_name}_versioning" {{')
-        config_lines.append(f'  bucket = aws_s3_bucket.{bucket_name}.id')
-        config_lines.append('  versioning_configuration {')
-        config_lines.append('    status = "Enabled"')
-        config_lines.append('  }')
-        config_lines.append('}')
-        
-        return '\n'.join(config_lines)
-    
-    def process_terraform_files(self) -> None:
-        """Process all Terraform files and fix S3 misconfigurations"""
-        os.makedirs(OUTPUT_DIR, exist_ok=True)
-        
-        for root, _, files in os.walk(SOURCE_DIR):
-            for file in files:
-                if not file.endswith('.tf'):
-                    continue
-                
-                file_path = os.path.join(root, file)
-                self._process_single_file(file_path, file)
-    
-    def _process_single_file(self, file_path: str, filename: str) -> None:
-        """Process a single Terraform file"""
+    def read_file_content(self, file_path):
+        """Read and return file content."""
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
-                content = ''.join(lines)
+                return f.read()
         except Exception as e:
             print(f"Error reading {file_path}: {e}")
-            return
+            return None
+    
+    def find_s3_buckets(self, content):
+        """Find S3 bucket resources in Terraform content."""
+        # Pattern to match aws_s3_bucket resources
+        bucket_pattern = r'resource\s+"aws_s3_bucket"\s+"([^"]+)"\s*\{([^}]*(?:\{[^}]*\}[^}]*)*)\}'
+        buckets = []
         
-        if not self.has_public_acl(content):
-            return
-        
-        # Find S3 bucket resources
-        bucket_resources = list(re.finditer(r'resource\s+"aws_s3_bucket"\s+"([^"]+)"', content))
-        
-        for match in bucket_resources:
+        for match in re.finditer(bucket_pattern, content, re.DOTALL):
             bucket_name = match.group(1)
-            resource_line = content[:match.start()].count('\n')
+            bucket_config = match.group(2)
+            start_pos = match.start()
+            end_pos = match.end()
             
-            # Extract configuration
-            config = self.extract_bucket_config(content)
-            config["name"] = bucket_name
-            
-            # Extract comments
-            comments = self.extract_comments_near_resource(lines, resource_line)
-            
-            # Analyze intent
-            is_intentional, confidence, reasons = self.analyze_intent(
-                bucket_name, config["tags"], comments
-            )
-            
-            # Record analysis
-            analysis = {
-                "file": filename,
-                "bucket_name": bucket_name,
-                "original_acl": config["acl"],
-                "is_intentional_public": is_intentional,
-                "confidence": confidence,
-                "reasons": reasons,
-                "action": "skipped" if is_intentional else "fixed"
-            }
-            self.analysis_results.append(analysis)
-            
-            # Generate fixed configuration
-            if not is_intentional:
-                secure_config = self.generate_secure_config(config, False)
-                self._save_fixed_file(filename, secure_config)
-                analysis["action"] = "fixed"
-            else:
-                # Still generate a secure public configuration
-                secure_config = self.generate_secure_config(config, True) 
-                self._save_fixed_file(f"public_{filename}", secure_config)
-                analysis["action"] = "secured_public"
-    
-    def _save_fixed_file(self, filename: str, content: str) -> None:
-        """Save fixed configuration to output directory"""
-        output_path = os.path.join(OUTPUT_DIR, filename)
-        try:
-            with open(output_path, 'w', encoding='utf-8') as f:
-                f.write(content)
-            self.fixed_files.append(filename)
-        except Exception as e:
-            print(f"Error saving {output_path}: {e}")
-    
-    def generate_report(self) -> None:
-        """Generate a comprehensive remediation report"""
-        report_path = os.path.join(OUTPUT_DIR, REPORT_FILE)
+            buckets.append({
+                'name': bucket_name,
+                'config': bucket_config,
+                'full_match': match.group(0),
+                'start': start_pos,
+                'end': end_pos
+            })
         
+        return buckets
+    
+    def check_bucket_security_issues(self, bucket_config):
+        """Check for security issues in bucket configuration."""
+        issues = []
+        
+        # Check for public ACLs (CKV_AWS_20)
+        if re.search(r'acl\s*=\s*["\']public-read["\']', bucket_config):
+            issues.append('public_read_acl')
+        if re.search(r'acl\s*=\s*["\']public-read-write["\']', bucket_config):
+            issues.append('public_read_write_acl')
+        
+        # Check for missing server-side encryption (CKV_AWS_21)
+        if not re.search(r'server_side_encryption_configuration', bucket_config):
+            issues.append('missing_encryption')
+        
+        # Check for missing public access block (CKV2_AWS_6)
+        if not re.search(r'aws_s3_bucket_public_access_block', bucket_config):
+            issues.append('missing_public_access_block')
+        
+        return issues
+    
+    def generate_secure_bucket_config(self, bucket_name, original_config, issues):
+        """Generate a secure version of the S3 bucket configuration."""
+        secure_config = original_config
+        
+        # Fix public ACLs
+        if 'public_read_acl' in issues or 'public_read_write_acl' in issues:
+            secure_config = re.sub(r'acl\s*=\s*["\']public-read(-write)?["\']', 'acl = "private"', secure_config)
+        
+        # Add server-side encryption if missing
+        if 'missing_encryption' in issues:
+            encryption_block = '''
+  server_side_encryption_configuration {
+    rule {
+      apply_server_side_encryption_by_default {
+        sse_algorithm = "AES256"
+      }
+      bucket_key_enabled = true
+    }
+  }'''
+            secure_config += encryption_block
+        
+        # Add versioning for better security
+        if not re.search(r'versioning', secure_config):
+            versioning_block = '''
+  versioning {
+    enabled = true
+  }'''
+            secure_config += versioning_block
+        
+        # Add security tags
+        if not re.search(r'tags\s*=', secure_config):
+            tags_block = '''
+  tags = {
+    Environment = "production"
+    Security = "enhanced"
+    ManagedBy = "security-gatekeeper"
+  }'''
+            secure_config += tags_block
+        
+        # Generate the complete resource block
+        full_config = f'''resource "aws_s3_bucket" "{bucket_name}" {{{secure_config}
+}}'''
+        
+        # Add public access block resource if missing
+        if 'missing_public_access_block' in issues:
+            public_access_block = f'''
+resource "aws_s3_bucket_public_access_block" "{bucket_name}_pab" {{
+  bucket = aws_s3_bucket.{bucket_name}.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+
+  depends_on = [aws_s3_bucket.{bucket_name}]
+}}'''
+            full_config += public_access_block
+        
+        return full_config
+    
+    def process_file(self, file_path):
+        """Process a single Terraform file for S3 security issues."""
+        print(f"Processing: {file_path}")
+        content = self.read_file_content(file_path)
+        if not content:
+            return
+        
+        buckets = self.find_s3_buckets(content)
+        if not buckets:
+            print(f"  No S3 buckets found in {file_path}")
+            return
+        
+        file_issues = []
+        fixed_content = content
+        
+        for bucket in buckets:
+            bucket_name = bucket['name']
+            bucket_config = bucket['config']
+            issues = self.check_bucket_security_issues(bucket_config)
+            
+            if issues:
+                print(f"  Found issues in bucket '{bucket_name}': {', '.join(issues)}")
+                
+                # Check if this is an intentionally public bucket
+                if self.is_intentionally_public(bucket_name, bucket_config):
+                    print(f"    Bucket '{bucket_name}' appears to be intentionally public, applying enhanced security only")
+                    secure_config = self.generate_enhanced_public_bucket_config(bucket_name, bucket_config)
+                else:
+                    secure_config = self.generate_secure_bucket_config(bucket_name, bucket_config, issues)
+                
+                file_issues.append({
+                    'bucket_name': bucket_name,
+                    'issues': issues,
+                    'original_config': bucket['full_match'],
+                    'fixed_config': secure_config
+                })
+                
+                # Replace in content for the fixed file
+                fixed_content = fixed_content.replace(bucket['full_match'], secure_config)
+        
+        if file_issues:
+            self.issues_found.extend(file_issues)
+            
+            # Save the fixed file
+            if not self.dry_run:
+                fixed_file_path = self.fix_artifacts_dir / f"fixed_{file_path.name}"
+                with open(fixed_file_path, 'w', encoding='utf-8') as f:
+                    f.write(fixed_content)
+                print(f"  Created fixed file: {fixed_file_path}")
+            else:
+                # In dry-run mode, still create the fixed file for review
+                fixed_file_path = self.fix_artifacts_dir / f"preview_{file_path.name}"
+                with open(fixed_file_path, 'w', encoding='utf-8') as f:
+                    f.write(fixed_content)
+                print(f"  Created preview file: {fixed_file_path}")
+            
+            self.fixes_applied.extend(file_issues)
+    
+    def is_intentionally_public(self, bucket_name, config):
+        """Determine if a bucket is intentionally public based on naming and tags."""
+        public_indicators = [
+            'public', 'website', 'cdn', 'static', 'assets', 'media'
+        ]
+        
+        # Check bucket name
+        if any(indicator in bucket_name.lower() for indicator in public_indicators):
+            return True
+        
+        # Check for specific tags indicating intentional public access
+        if re.search(r'public.*=.*["\']true["\']', config, re.IGNORECASE):
+            return True
+        
+        return False
+    
+    def generate_enhanced_public_bucket_config(self, bucket_name, original_config):
+        """Generate enhanced security config for intentionally public buckets."""
+        secure_config = original_config
+        
+        # Keep public ACL but add other security measures
+        # Add server-side encryption
+        if not re.search(r'server_side_encryption_configuration', secure_config):
+            encryption_block = '''
+  server_side_encryption_configuration {
+    rule {
+      apply_server_side_encryption_by_default {
+        sse_algorithm = "AES256"
+      }
+      bucket_key_enabled = true
+    }
+  }'''
+            secure_config += encryption_block
+        
+        # Add versioning
+        if not re.search(r'versioning', secure_config):
+            versioning_block = '''
+  versioning {
+    enabled = true
+  }'''
+            secure_config += versioning_block
+        
+        # Add security tags
+        if not re.search(r'tags\s*=', secure_config):
+            tags_block = '''
+  tags = {
+    Environment = "production"
+    Security = "enhanced-public"
+    PublicAccess = "intentional"
+    ManagedBy = "security-gatekeeper"
+  }'''
+            secure_config += tags_block
+        
+        return f'''resource "aws_s3_bucket" "{bucket_name}" {{{secure_config}
+}}'''
+    
+    def generate_remediation_report(self):
+        """Generate a detailed remediation report."""
+        report = f"""# S3 Security Remediation Report
+
+Generated: {datetime.now().isoformat()}
+Mode: {'DRY RUN' if self.dry_run else 'LIVE'}
+
+## Summary
+- Files processed: {len(self.fixes_applied)}
+- Security issues found: {len(self.issues_found)}
+- Fixes applied: {len(self.fixes_applied)}
+
+## Issues Found and Fixed
+
+"""
+        
+        for issue in self.issues_found:
+            report += f"""### Bucket: `{issue['bucket_name']}`
+**Issues:** {', '.join(issue['issues'])}
+
+**Original Configuration:**
+```hcl
+{issue['original_config'][:200]}...
+```
+
+**Fixed Configuration:**
+```hcl
+{issue['fixed_config'][:200]}...
+```
+
+---
+
+"""
+        
+        report += f"""
+## Security Improvements Applied
+
+1. **Private ACLs**: Changed public bucket ACLs to private where appropriate
+2. **Encryption**: Added AES256 server-side encryption to all buckets
+3. **Versioning**: Enabled versioning for data protection
+4. **Public Access Blocks**: Added comprehensive public access restrictions
+5. **Security Tags**: Applied security and management tags
+
+## Next Steps
+
+1. Review the generated configurations in the fix_artifacts directory
+2. Test the configurations in a development environment
+3. Apply the changes during a maintenance window
+4. Monitor for any access issues after deployment
+
+## Files Generated
+
+"""
+        
+        for file_path in self.fix_artifacts_dir.glob("*.tf"):
+            report += f"- `{file_path.name}`\n"
+        
+        return report
+    
+    def run(self):
+        """Run the complete remediation process."""
+        print(f"🔍 Starting S3 Security Remediation")
+        print(f"Source directory: {self.source_dir}")
+        print(f"Mode: {'DRY RUN' if self.dry_run else 'LIVE'}")
+        print("-" * 50)
+        
+        # Find and process all Terraform files
+        tf_files = self.scan_terraform_files()
+        print(f"Found {len(tf_files)} Terraform files")
+        
+        for tf_file in tf_files:
+            self.process_file(tf_file)
+        
+        # Generate summary report
+        report = self.generate_remediation_report()
+        report_path = self.fix_artifacts_dir / "s3_remediation_report.md"
         with open(report_path, 'w', encoding='utf-8') as f:
-            f.write("# 🛡️ S3 Security Remediation Report\n\n")
-            f.write(f"*Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*\n\n")
-            
-            # Summary
-            total = len(self.analysis_results)
-            fixed = len([r for r in self.analysis_results if r["action"] == "fixed"])
-            skipped = len([r for r in self.analysis_results if r["action"] == "skipped"])
-            secured_public = len([r for r in self.analysis_results if r["action"] == "secured_public"])
-            
-            f.write("## 📊 Summary\n\n")
-            f.write(f"- **Total Buckets Analyzed**: {total}\n")
-            f.write(f"- **🔒 Fixed (Made Private)**: {fixed}\n")
-            f.write(f"- **🔐 Secured Public**: {secured_public}\n")
-            f.write(f"- **⏭️ Skipped (Intentional)**: {skipped}\n")
-            f.write(f"- **📁 Files Generated**: {len(self.fixed_files)}\n\n")
-            
-            # Detailed results
-            f.write("## 🔍 Detailed Analysis\n\n")
-            f.write("| Bucket | File | Original ACL | Action | Confidence | Reasons |\n")
-            f.write("|--------|------|--------------|--------|------------|----------|\n")
-            
-            for result in self.analysis_results:
-                action_emoji = {
-                    "fixed": "🔒",
-                    "secured_public": "🔐", 
-                    "skipped": "⏭️"
-                }.get(result["action"], "❓")
-                
-                reasons_text = "; ".join(result["reasons"]) if result["reasons"] else "None"
-                
-                f.write(f"| `{result['bucket_name']}` | `{result['file']}` | "
-                       f"`{result['original_acl']}` | {action_emoji} {result['action']} | "
-                       f"{result['confidence']} | {reasons_text} |\n")
-            
-            # Security improvements applied
-            f.write("\n## 🛡️ Security Improvements Applied\n\n")
-            f.write("For all remediated buckets, the following security measures were implemented:\n\n")
-            f.write("- ✅ **Encryption**: Server-side encryption enabled (AES256)\n")
-            f.write("- ✅ **Versioning**: Object versioning enabled\n")
-            f.write("- ✅ **Access Control**: Appropriate ACL settings\n")
-            f.write("- ✅ **Public Access Block**: Configured for private buckets\n")
-            f.write("- ✅ **Tagging**: Security management tags added\n\n")
-            
-            # Next steps
-            f.write("## 🚀 Next Steps\n\n")
-            f.write("1. Review the generated configurations in the `fix_artifacts/` directory\n")
-            f.write("2. Test the configurations in a development environment\n")
-            f.write("3. Apply the changes using `terraform plan` and `terraform apply`\n")
-            f.write("4. Monitor bucket access patterns after changes\n")
-            f.write("5. Update your CI/CD pipeline to prevent future misconfigurations\n")
+            f.write(report)
+        
+        # Generate JSON summary for automation
+        summary = {
+            'timestamp': datetime.now().isoformat(),
+            'dry_run': self.dry_run,
+            'files_processed': len(tf_files),
+            'issues_found': len(self.issues_found),
+            'fixes_applied': len(self.fixes_applied),
+            'issues_detail': self.issues_found
+        }
+        
+        summary_path = self.fix_artifacts_dir / "remediation_summary.json"
+        with open(summary_path, 'w', encoding='utf-8') as f:
+            json.dump(summary, f, indent=2)
+        
+        print("-" * 50)
+        print(f"✅ Remediation complete!")
+        print(f"📊 Report saved to: {report_path}")
+        print(f"📋 Summary saved to: {summary_path}")
+        
+        if self.fixes_applied:
+            print(f"🔧 {len(self.fixes_applied)} fixes generated")
+            if self.dry_run:
+                print("🔍 Running in DRY RUN mode - review files before applying")
+        else:
+            print("✨ No S3 security issues found!")
+
 
 def main():
-    """Main execution function"""
-    print("🔍 Starting S3 Security Remediation...")
+    parser = argparse.ArgumentParser(description='S3 Security Remediation Tool')
+    parser.add_argument('--source-dir', default='terraform', help='Directory to scan for Terraform files')
+    parser.add_argument('--dry-run', action='store_true', default=True, help='Run in dry-run mode')
+    parser.add_argument('--live', action='store_true', help='Run in live mode (applies fixes)')
     
-    analyzer = S3BucketAnalyzer()
-    analyzer.process_terraform_files()
-    analyzer.generate_report()
+    args = parser.parse_args()
     
-    total_analyzed = len(analyzer.analysis_results)
-    total_fixed = len(analyzer.fixed_files)
+    # Handle environment variables (for GitHub Actions)
+    source_dir = os.getenv('SOURCE_DIR', args.source_dir)
+    dry_run = os.getenv('DRY_RUN', 'true').lower() == 'true'
     
-    print(f"✅ Remediation complete!")
-    print(f"   📁 Files analyzed: {total_analyzed}")
-    print(f"   🔧 Configurations generated: {total_fixed}")
-    print(f"   📋 Report saved to: {OUTPUT_DIR}/{REPORT_FILE}")
+    if args.live:
+        dry_run = False
+    
+    # Initialize and run remediation
+    remediator = S3SecurityRemediator(source_dir=source_dir, dry_run=dry_run)
+    remediator.run()
+
 
 if __name__ == "__main__":
     main()
