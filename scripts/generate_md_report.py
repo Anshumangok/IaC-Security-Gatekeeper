@@ -5,15 +5,63 @@ import sys
 
 # Optional severity fallback if missing
 CHECKOV_SEVERITY_MAP = {
-    "CKV_AWS_19": "HIGH",
-    "CKV_AWS_21": "HIGH",
-    "CKV_AWS_144": "MEDIUM",
-    "CKV_AWS_145": "HIGH",
-    "CKV_K8S_20": "HIGH",
-    "CKV_K8S_30": "HIGH",
-    "CKV_K8S_11": "MEDIUM",
-    "CKV_K8S_21": "LOW",
+    # --- AWS S3 ---
+    "CKV_AWS_18": "LOW",           # Access logging
+    "CKV_AWS_20": "HIGH",          # Unrestricted public bucket
+    "CKV_AWS_21": "HIGH",          # Unencrypted S3 bucket
+    "CKV_AWS_144": "MEDIUM",       # Cross-region replication
+    "CKV_AWS_145": "HIGH",         # Default encryption
+    "CKV_AWS_19": "HIGH",          # SSL-only bucket policy
+
+    # --- AWS S3 Extended ---
+    "CKV2_AWS_6": "HIGH",          # Public Access Block
+    "CKV2_AWS_61": "LOW",          # Lifecycle configuration
+    "CKV2_AWS_62": "MEDIUM",       # Event notification
+
+    # --- AWS General ---
+    "CKV_AWS_23": "HIGH",          # Unrestricted SG ingress
+    "CKV_AWS_117": "HIGH",         # IAM policy allows *
+    "CKV_AWS_111": "HIGH",         # No MFA on IAM users
+    "CKV_AWS_16": "HIGH",          # RDS not encrypted
+    "CKV_AWS_79": "HIGH",          # Secrets in plain text
+
+    # --- Kubernetes: General Security ---
+    "CKV_K8S_8": "MEDIUM",         # Liveness probe
+    "CKV_K8S_9": "MEDIUM",         # Readiness probe
+    "CKV_K8S_10": "MEDIUM",        # CPU requests
+    "CKV_K8S_11": "MEDIUM",        # CPU limits
+    "CKV_K8S_12": "MEDIUM",        # Memory requests
+    "CKV_K8S_13": "MEDIUM",        # Memory limits
+    "CKV_K8S_14": "LOW",           # Image tag not pinned
+    "CKV_K8S_20": "HIGH",          # allowPrivilegeEscalation
+    "CKV_K8S_21": "LOW",           # Default namespace
+    "CKV_K8S_22": "LOW",           # Read-only root filesystem
+    "CKV_K8S_23": "HIGH",          # Containers run as root
+    "CKV_K8S_28": "HIGH",          # Minimize capabilities
+    "CKV_K8S_29": "HIGH",          # Pod security context
+    "CKV_K8S_30": "HIGH",          # Container security context
+    "CKV_K8S_31": "MEDIUM",        # Seccomp profile
+    "CKV_K8S_37": "HIGH",          # Capabilities - restrict admission
+    "CKV_K8S_38": "MEDIUM",        # Automount ServiceAccountToken
+    "CKV_K8S_40": "MEDIUM",        # High UID user
+    "CKV_K8S_43": "LOW",           # Use image digest
+
+    # --- Kubernetes RBAC / Secrets ---
+    "CKV_K8S_6": "HIGH",           # Secret mounted as env var
+    "CKV_K8S_7": "HIGH",           # RBAC rules overly permissive
+
+    # --- GitHub Workflows ---
+    "CKV2_GHA_1": "LOW",           # Top-level permissions not set
+    "CKV_GHA_2": "MEDIUM",         # Untrusted actions
+
+    # --- Docker ---
+    "CKV_DOCKER_2": "HIGH",        # Use latest image
+    "CKV_DOCKER_3": "MEDIUM",      # USER not set in Dockerfile
+
+    # --- Terraform Linting ---
+    "CKV_TF_1": "LOW",             # Missing description
 }
+
 
 def get_severity(check):
     severity = check.get("severity", "UNKNOWN")
