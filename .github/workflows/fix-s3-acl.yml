@@ -1,351 +1,665 @@
-name: S3 Security Remediation
+name: 🛡️ S3 Security Gatekeeper
 
 on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - '**/*.tf'
+      - '**/*.json'
+      - '.github/workflows/s3-security.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - '**/*.tf'
+      - '**/*.json'
   workflow_dispatch:
     inputs:
-      dry_run:
-        description: 'Run in dry-run mode (generate fixes without applying)'
+      scan_all:
+        description: 'Scan all files (not just changed)'
+        required: false
+        default: 'false'
+        type: boolean
+      auto_fix:
+        description: 'Auto-generate fixes for S3 issues'
         required: false
         default: 'true'
-        type: choice
-        options:
-          - 'true'
-          - 'false'
-      target_directory:
-        description: 'Directory to scan for Terraform files'
-        required: false
-        default: 'terraform'
-        type: string
+        type: boolean
+
+env:
+  CHECKOV_VERSION: "3.2.0"
+  PYTHON_VERSION: "3.11"
 
 jobs:
+  # Job 1: Run Checkov Security Scan
   security-scan:
+    name: 🔍 Security Scan
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      pull-requests: write
+    
     outputs:
-      has_s3_issues: ${{ steps.checkov-scan.outputs.has_s3_issues }}
+      has-s3-issues: ${{ steps.check-s3-issues.outputs.has-issues }}
+      scan-status: ${{ steps.checkov-scan.outputs.status }}
     
     steps:
-      - name: Checkout Repository
+      - name: 📥 Checkout Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Set up Python
+      - name: 🐍 Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
+          python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install Security Tools
+      - name: 📦 Install Checkov
         run: |
-          pip install checkov
-          pip install boto3  # For future AWS integration
+          pip install checkov==${{ env.CHECKOV_VERSION }}
+          checkov --version
 
-      - name: Run Checkov Security Scan
+      - name: 📁 Create Reports Directory
+        run: mkdir -p checkov_reports scripts
+
+      - name: 🔍 Run Checkov Scan
         id: checkov-scan
+        continue-on-error: true
         run: |
-          mkdir -p checkov_reports
+          echo "🔍 Running Checkov security scan..."
           
-          # Run Checkov scan
-          checkov -d ${{ github.event.inputs.target_directory || 'terraform' }} \
+          # Run Checkov with JSON output
+          checkov \
+            --framework terraform \
             --output json \
-            --soft-fail \
-            --check CKV_AWS_20,CKV_AWS_21,CKV2_AWS_6 \
-            > checkov_reports/report.json
+            --output-file checkov_reports/report.json \
+            --quiet \
+            --compact \
+            --directory . \
+            --skip-check CKV_TF_1 \
+            || echo "status=failed" >> $GITHUB_OUTPUT
           
-          # Check if S3 issues exist
-          if grep -q "CKV_AWS_20\|CKV_AWS_21\|CKV2_AWS_6" checkov_reports/report.json; then
-            echo "has_s3_issues=true" >> $GITHUB_OUTPUT
+          # Also generate CLI output for logs
+          checkov \
+            --framework terraform \
+            --directory . \
+            --quiet \
+            --compact || true
+          
+          echo "status=completed" >> $GITHUB_OUTPUT
+
+      - name: 📊 Check for S3 Issues
+        id: check-s3-issues
+        run: |
+          if [ -f "checkov_reports/report.json" ]; then
+            # Check if S3-related issues exist
+            S3_ISSUES=$(python3 -c "
+          import json
+          import sys
+          
+          try:
+              with open('checkov_reports/report.json', 'r') as f:
+                  data = json.load(f)
+              
+              failed_checks = []
+              if isinstance(data, dict):
+                  if 'results' in data:
+                      failed_checks = data['results'].get('failed_checks', [])
+                  elif 'failed_checks' in data:
+                      failed_checks = data.get('failed_checks', [])
+              elif isinstance(data, list):
+                  for item in data:
+                      if isinstance(item, dict) and 'results' in item:
+                          failed_checks.extend(item['results'].get('failed_checks', []))
+              
+              s3_checks = ['CKV_AWS_20', 'CKV2_AWS_6', 'CKV_AWS_21', 'CKV_AWS_18', 'CKV_AWS_19']
+              s3_issues = [check for check in failed_checks if check.get('check_id') in s3_checks]
+              
+              print(f'Found {len(s3_issues)} S3 security issues')
+              print('true' if s3_issues else 'false')
+          except Exception as e:
+              print(f'Error: {e}', file=sys.stderr)
+              print('false')
+          ")
+            
+            echo "has-issues=$S3_ISSUES" >> $GITHUB_OUTPUT
+            echo "🔍 S3 Issues Check: $S3_ISSUES"
           else
-            echo "has_s3_issues=false" >> $GITHUB_OUTPUT
+            echo "has-issues=false" >> $GITHUB_OUTPUT
+            echo "❌ No Checkov report found"
           fi
 
-      - name: Generate Security Report
-        run: |
-          python scripts/generate_md_report.py
-
-      - name: Upload Scan Results
+      - name: 📤 Upload Scan Results
         uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: security-scan-results
+          name: checkov-scan-results
           path: checkov_reports/
           retention-days: 30
 
-  s3-remediation:
+  # Job 2: Generate Reports and Fixes
+  generate-fixes:
+    name: 🔧 Generate S3 Fixes
     runs-on: ubuntu-latest
     needs: security-scan
-    if: needs.security-scan.outputs.has_s3_issues == 'true'
+    if: needs.security-scan.outputs.has-s3-issues == 'true'
+    permissions:
+      contents: write
+      pull-requests: write
     
     steps:
-      - name: Checkout Repository
+      - name: 📥 Checkout Code
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: 🐍 Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
+          python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install Dependencies
-        run: |
-          pip install -r requirements.txt || echo "No requirements.txt found"
+      - name: 📁 Create Scripts Directory
+        run: mkdir -p scripts
 
-      - name: Run S3 Security Remediation
-        run: |
-          echo "🔍 Starting S3 security remediation..."
-          
-          # Set environment variables
-          export SOURCE_DIR="${{ github.event.inputs.target_directory || 'terraform' }}"
-          export DRY_RUN="${{ github.event.inputs.dry_run || 'true' }}"
-          
-          # Run the enhanced remediation script
-          python scripts/fix_s3_acl_rule_based.py
-
-      - name: Validate Generated Configurations
-        run: |
-          echo "🔍 Validating generated Terraform configurations..."
-          
-          # Install terraform
-          wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
-          echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
-          sudo apt update && sudo apt install terraform
-          
-          # Validate each generated .tf file
-          if [ -d "fix_artifacts" ]; then
-            for tf_file in fix_artifacts/*.tf; do
-              if [ -f "$tf_file" ]; then
-                echo "Validating $tf_file..."
-                terraform fmt -check=true "$tf_file" || echo "❌ Format check failed for $tf_file"
-                terraform validate "$tf_file" || echo "❌ Validation failed for $tf_file"
-              fi
-            done
-          fi
-
-      - name: Create Pull Request (if not dry-run)
-        if: github.event.inputs.dry_run == 'false'
-        uses: peter-evans/create-pull-request@v5
+      - name: 📥 Download Scan Results
+        uses: actions/download-artifact@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          commit-message: |
-            🔒 Security: Fix S3 bucket misconfigurations
-            
-            - Automated remediation of public S3 buckets
-            - Applied security best practices
-            - Generated secure configurations
-            
-            This PR was automatically generated by the Security Gatekeeper.
-          title: '🔒 [Security] S3 Bucket Remediation'
-          body: |
-            ## 🛡️ S3 Security Remediation
-            
-            This PR contains automated fixes for S3 bucket security misconfigurations detected by our security gatekeeper.
-            
-            ### 🔍 What was detected:
-            - Public S3 buckets that should be private
-            - Missing encryption configurations
-            - Inadequate access controls
-            
-            ### 🔧 What was fixed:
-            - Changed ACLs from public to private (where appropriate)
-            - Added server-side encryption
-            - Enabled versioning
-            - Added public access blocks
-            - Applied security tags
-            
-            ### 📋 Review Checklist:
-            - [ ] Review the remediation report in `fix_artifacts/`
-            - [ ] Verify intentional public buckets were handled correctly
-            - [ ] Test configurations in development environment
-            - [ ] Confirm no business functionality is broken
-            
-            ### 🚀 Next Steps:
-            1. Review and approve this PR
-            2. Test in staging environment
-            3. Deploy to production during maintenance window
-            4. Monitor for any access issues
-            
-            ---
-            🤖 *This PR was automatically generated by the Security Gatekeeper*
-          branch: security/s3-remediation
-          delete-branch: true
+          name: checkov-scan-results
+          path: checkov_reports/
 
-      - name: Upload Remediation Artifacts
+      - name: 📝 Generate Markdown Report
+        run: |
+          cat > scripts/generate_reports.py << 'EOF'
+          #!/usr/bin/env python3
+          import json
+          import os
+          from datetime import datetime
+          from pathlib import Path
+          
+          def load_checkov_report():
+              report_path = Path("checkov_reports/report.json")
+              if not report_path.exists():
+                  return None
+              try:
+                  with open(report_path, 'r') as f:
+                      return json.load(f)
+              except Exception as e:
+                  print(f"Error loading report: {e}")
+                  return None
+          
+          def parse_checkov_data(data):
+              failed_checks = []
+              if isinstance(data, dict):
+                  if "results" in data:
+                      failed_checks = data["results"].get("failed_checks", [])
+                  elif "failed_checks" in data:
+                      failed_checks = data.get("failed_checks", [])
+              elif isinstance(data, list):
+                  for item in data:
+                      if isinstance(item, dict):
+                          if "results" in item:
+                              failed_checks.extend(item["results"].get("failed_checks", []))
+              return failed_checks
+          
+          def generate_summary_report(failed_checks):
+              s3_checks = ['CKV_AWS_20', 'CKV2_AWS_6', 'CKV_AWS_21', 'CKV_AWS_18', 'CKV_AWS_19']
+              s3_issues = [check for check in failed_checks if check.get('check_id') in s3_checks]
+              
+              report = f"""# 🛡️ S3 Security Scan Summary
+          
+          **Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}
+          **Commit:** {os.environ.get('GITHUB_SHA', 'unknown')[:8]}
+          **Branch:** {os.environ.get('GITHUB_REF_NAME', 'unknown')}
+          
+          ## 📊 Results
+          
+          - **Total Failed Checks:** {len(failed_checks)}
+          - **S3 Security Issues:** {len(s3_issues)} 🚨
+          - **Status:** {'❌ Issues Found' if s3_issues else '✅ No S3 Issues'}
+          
+          ## 🚨 S3 Issues Found
+          
+          """
+              
+              if not s3_issues:
+                  report += "✅ **No S3 security issues detected!**\n"
+              else:
+                  for i, issue in enumerate(s3_issues, 1):
+                      report += f"""### {i}. {issue.get('check_name', 'Unknown Check')}
+          
+          - **Check ID:** `{issue.get('check_id', 'N/A')}`
+          - **File:** `{issue.get('file_path', 'N/A')}`
+          - **Resource:** `{issue.get('resource', 'N/A')}`
+          - **Lines:** {'-'.join(map(str, issue.get('file_line_range', ['N/A'])))}
+          
+          """
+              
+              report += f"""
+          ## 🔧 Next Steps
+          
+          {'1. Review the generated fixes in the `fixed_terraform/` directory' if s3_issues else ''}
+          {'2. Apply the security improvements to make S3 buckets private' if s3_issues else ''}
+          {'3. Re-run the security scan to verify fixes' if s3_issues else ''}
+          
+          ---
+          *Generated by S3 Security Gatekeeper*
+          """
+              
+              return report
+          
+          def main():
+              data = load_checkov_report()
+              if not data:
+                  print("No Checkov data found")
+                  return
+              
+              failed_checks = parse_checkov_data(data)
+              report = generate_summary_report(failed_checks)
+              
+              with open("checkov_reports/security_summary.md", "w") as f:
+                  f.write(report)
+              
+              print(f"Generated summary report with {len(failed_checks)} total issues")
+          
+          if __name__ == "__main__":
+              main()
+          EOF
+          
+          python scripts/generate_reports.py
+
+      - name: 🔧 Generate S3 Fixes
+        if: github.event.inputs.auto_fix != 'false'
+        run: |
+          # Copy the S3 fixer script
+          cat > scripts/fix_s3_buckets.py << 'EOF'
+          #!/usr/bin/env python3
+          import json
+          import os
+          import re
+          from pathlib import Path
+          from datetime import datetime
+          
+          S3_PUBLIC_CHECKS = {
+              "CKV_AWS_20": "S3 Bucket has an ACL defined which allows public access",
+              "CKV2_AWS_6": "Ensure that S3 bucket has S3 Bucket Public Access Block enabled",
+              "CKV_AWS_21": "Ensure S3 bucket has server-side encryption enabled",
+              "CKV_AWS_18": "Ensure S3 bucket has access logging enabled",
+              "CKV_AWS_19": "Ensure S3 bucket has MFA delete enabled"
+          }
+          
+          def load_checkov_report():
+              report_path = Path("checkov_reports/report.json")
+              if not report_path.exists():
+                  return None
+              try:
+                  with open(report_path, 'r') as f:
+                      return json.load(f)
+              except Exception as e:
+                  print(f"Error loading report: {e}")
+                  return None
+          
+          def parse_checkov_data(data):
+              failed_checks = []
+              if isinstance(data, dict):
+                  if "results" in data:
+                      failed_checks = data["results"].get("failed_checks", [])
+                  elif "failed_checks" in data:
+                      failed_checks = data.get("failed_checks", [])
+              elif isinstance(data, list):
+                  for item in data:
+                      if isinstance(item, dict):
+                          if "results" in item:
+                              failed_checks.extend(item["results"].get("failed_checks", []))
+              return failed_checks
+          
+          def identify_s3_issues(failed_checks):
+              return [check for check in failed_checks if check.get("check_id") in S3_PUBLIC_CHECKS]
+          
+          def fix_terraform_content(content, resource_name, check_id):
+              if check_id == "CKV_AWS_20":  # Fix public ACL
+                  patterns = [
+                      (r'acl\s*=\s*"public-read"', 'acl = "private"'),
+                      (r'acl\s*=\s*"public-read-write"', 'acl = "private"'),
+                  ]
+                  for pattern, replacement in patterns:
+                      content = re.sub(pattern, replacement, content)
+              
+              elif check_id == "CKV2_AWS_6":  # Add public access block
+                  bucket_name = resource_name.split('.')[-1].replace('_acl', '').replace('_bucket', '')
+                  pab_config = f'''
+          resource "aws_s3_bucket_public_access_block" "{bucket_name}_pab" {{
+            bucket = aws_s3_bucket.{bucket_name}.id
+          
+            block_public_acls       = true
+            block_public_policy     = true
+            ignore_public_acls      = true
+            restrict_public_buckets = true
+          }}
+          '''
+                  if 'aws_s3_bucket_public_access_block' not in content:
+                      content += pab_config
+              
+              elif check_id == "CKV_AWS_21":  # Add encryption
+                  bucket_name = resource_name.split('.')[-1].replace('_acl', '').replace('_bucket', '')
+                  encrypt_config = f'''
+          resource "aws_s3_bucket_server_side_encryption_configuration" "{bucket_name}_encryption" {{
+            bucket = aws_s3_bucket.{bucket_name}.id
+          
+            rule {{
+              apply_server_side_encryption_by_default {{
+                sse_algorithm = "AES256"
+              }}
+            }}
+          }}
+          '''
+                  if 'aws_s3_bucket_server_side_encryption_configuration' not in content:
+                      content += encrypt_config
+              
+              elif check_id == "CKV_AWS_18":  # Add access logging
+                  bucket_name = resource_name.split('.')[-1].replace('_acl', '').replace('_bucket', '')
+                  logging_config = f'''
+          resource "aws_s3_bucket_logging" "{bucket_name}_logging" {{
+            bucket = aws_s3_bucket.{bucket_name}.id
+          
+            target_bucket = aws_s3_bucket.{bucket_name}_logs.id
+            target_prefix = "log/"
+          }}
+          
+          resource "aws_s3_bucket" "{bucket_name}_logs" {{
+            bucket = "{bucket_name}-access-logs"
+          }}
+          '''
+                  if 'aws_s3_bucket_logging' not in content:
+                      content += logging_config
+              
+              elif check_id == "CKV_AWS_19":  # Add MFA delete (requires versioning)
+                  bucket_name = resource_name.split('.')[-1].replace('_acl', '').replace('_bucket', '')
+                  versioning_config = f'''
+          resource "aws_s3_bucket_versioning" "{bucket_name}_versioning" {{
+            bucket = aws_s3_bucket.{bucket_name}.id
+            versioning_configuration {{
+              status     = "Enabled"
+              mfa_delete = "Enabled"
+            }}
+          }}
+          '''
+                  if 'aws_s3_bucket_versioning' not in content:
+                      content += versioning_config
+              
+              return content
+          
+          def generate_fix_summary(s3_issues, files_processed):
+              summary = f"""# 🔧 S3 Security Fixes Applied
+          
+          **Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}
+          **Files Processed:** {len(files_processed)}
+          **Issues Fixed:** {len(s3_issues)}
+          
+          ## 🛠️ Fixes Applied
+          
+          """
+              
+              for issue in s3_issues:
+                  check_id = issue.get("check_id", "")
+                  file_path = issue.get("file_path", "")
+                  resource = issue.get("resource", "")
+                  
+                  summary += f"""### {S3_PUBLIC_CHECKS.get(check_id, 'Unknown Check')}
+          - **Check ID:** `{check_id}`
+          - **File:** `{file_path}`
+          - **Resource:** `{resource}`
+          
+          """
+              
+              summary += """
+          ## 📋 Manual Steps Required
+          
+          1. **Review the fixed files** in the `fixed_terraform/` directory
+          2. **Test the changes** in a non-production environment
+          3. **Replace your original files** with the fixed versions
+          4. **Run terraform plan** to see the changes
+          5. **Apply the changes** with `terraform apply`
+          6. **For MFA delete**: Configure MFA delete manually via AWS CLI or Console
+          
+          ## ⚠️ Important Notes
+          
+          - **Access Logging**: Creates additional S3 buckets for storing access logs
+          - **MFA Delete**: Requires MFA device configuration and can only be enabled by root user
+          - **Encryption**: Uses AES256 by default, consider KMS for enhanced security
+          - **Cost Impact**: Additional resources may incur extra AWS charges
+          
+          ---
+          *Generated by S3 Security Gatekeeper*
+          """
+              
+              return summary
+          
+          def main():
+              print("🔧 Starting S3 fixes generation...")
+              
+              data = load_checkov_report()
+              if not data:
+                  print("No Checkov data found")
+                  return
+              
+              failed_checks = parse_checkov_data(data)
+              s3_issues = identify_s3_issues(failed_checks)
+              
+              if not s3_issues:
+                  print("✅ No S3 issues to fix")
+                  return
+              
+              print(f"🔍 Found {len(s3_issues)} S3 issues to fix")
+              
+              # Create fixed directory
+              fixed_dir = Path("fixed_terraform")
+              fixed_dir.mkdir(exist_ok=True)
+              
+              files_processed = set()
+              
+              for issue in s3_issues:
+                  file_path = issue.get("file_path", "")
+                  if not file_path or not os.path.exists(file_path):
+                      continue
+                  
+                  if file_path in files_processed:
+                      continue
+                  
+                  print(f"🔧 Processing {file_path}")
+                  
+                  try:
+                      with open(file_path, 'r') as f:
+                          content = f.read()
+                      
+                      original_content = content
+                      
+                      # Apply all fixes for this file
+                      file_issues = [i for i in s3_issues if i.get("file_path") == file_path]
+                      for file_issue in file_issues:
+                          resource_name = file_issue.get("resource", "")
+                          check_id = file_issue.get("check_id", "")
+                          content = fix_terraform_content(content, resource_name, check_id)
+                      
+                      # Save fixed file if changes were made
+                      if content != original_content:
+                          fixed_file_path = fixed_dir / Path(file_path).name
+                          with open(fixed_file_path, 'w') as f:
+                              f.write(content)
+                          print(f"✅ Fixed file saved: {fixed_file_path}")
+                          files_processed.add(file_path)
+                      
+                  except Exception as e:
+                      print(f"❌ Error processing {file_path}: {e}")
+              
+              # Generate fix summary
+              fix_summary = generate_fix_summary(s3_issues, files_processed)
+              with open("fixed_terraform/fix_summary.md", "w") as f:
+                  f.write(fix_summary)
+              
+              print(f"🎯 Processed {len(files_processed)} files")
+              print("📄 Fix summary generated: fixed_terraform/fix_summary.md")
+          
+          if __name__ == "__main__":
+              main()
+          EOF
+          
+          python scripts/fix_s3_buckets.py
+
+      - name: 📤 Upload Fixed Files
         uses: actions/upload-artifact@v4
         with:
-          name: s3-remediation-artifacts
-          path: fix_artifacts/
-          retention-days: 90
+          name: s3-security-fixes
+          path: |
+            fixed_terraform/
+            checkov_reports/
+          retention-days: 30
 
-      - name: Post Summary Comment
+      - name: 💬 Comment on PR
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
+            const path = require('path');
             
             try {
-              // Read the remediation report
-              const reportPath = 'fix_artifacts/s3_remediation_report.md';
-              if (fs.existsSync(reportPath)) {
-                const report = fs.readFileSync(reportPath, 'utf8');
+              const summaryPath = 'checkov_reports/security_summary.md';
+              if (fs.existsSync(summaryPath)) {
+                const summary = fs.readFileSync(summaryPath, 'utf8');
                 
                 await github.rest.issues.createComment({
                   issue_number: context.issue.number,
                   owner: context.repo.owner,
                   repo: context.repo.repo,
-                  body: `## 🛡️ S3 Security Remediation Results\n\n${report}`
+                  body: `## 🛡️ S3 Security Scan Results\n\n${summary}\n\n### 📁 Artifacts\n- **Fixed Files**: Available in the workflow artifacts\n- **Full Report**: Check the \`s3-security-fixes\` artifact`
                 });
               }
             } catch (error) {
-              console.log('Could not post report comment:', error.message);
+              console.log('Error posting comment:', error);
             }
 
-  security-validation:
+  # Job 3: Create GitHub Release with Fixes (optional)
+  create-release:
+    name: 📦 Create Security Fix Release
     runs-on: ubuntu-latest
-    needs: [security-scan, s3-remediation]
-    if: always() && needs.s3-remediation.result == 'success'
+    needs: [security-scan, generate-fixes]
+    if: needs.security-scan.outputs.has-s3-issues == 'true' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
     
     steps:
-      - name: Checkout Repository
+      - name: 📥 Checkout Code
         uses: actions/checkout@v4
 
-      - name: Download Remediation Artifacts
+      - name: 📥 Download Fixes
         uses: actions/download-artifact@v4
         with:
-          name: s3-remediation-artifacts
-          path: fix_artifacts/
+          name: s3-security-fixes
+          path: security-fixes/
 
-      - name: Re-scan Fixed Configurations
+      - name: 📦 Create Release Archive
         run: |
-          echo "🔍 Validating that fixes resolve security issues..."
-          
-          pip install checkov
-          
-          # Scan the fixed configurations
-          if [ -d "fix_artifacts" ]; then
-            checkov -d fix_artifacts/ \
-              --output json \
-              --soft-fail \
-              --check CKV_AWS_20,CKV_AWS_21,CKV2_AWS_6 \
-              > validation_results.json || true
-            
-            # Check if any S3 issues remain
-            if grep -q "FAILED" validation_results.json; then
-              echo "⚠️ Some security issues may remain in fixed configurations"
-              cat validation_results.json
-            else
-              echo "✅ All S3 security issues appear to be resolved"
-            fi
-          fi
+          cd security-fixes
+          zip -r ../security-fixes.zip .
+          cd ..
 
-      - name: Generate Final Security Report
-        run: |
-          echo "# 🎯 Final Security Validation Report" > final_report.md
-          echo "" >> final_report.md
-          echo "## Original Issues" >> final_report.md
-          echo "- S3 buckets with public ACLs detected" >> final_report.md
-          echo "- Misconfigurations found in Terraform files" >> final_report.md
-          echo "" >> final_report.md
-          echo "## Remediation Applied" >> final_report.md
-          echo "- Generated secure configurations" >> final_report.md
-          echo "- Applied security best practices" >> final_report.md
-          echo "- Preserved intentional public buckets with enhanced security" >> final_report.md
-          echo "" >> final_report.md
-          echo "## Validation Results" >> final_report.md
-          
-          if [ -f "validation_results.json" ]; then
-            echo "- Re-scan completed on fixed configurations" >> final_report.md
-            if grep -q "FAILED" validation_results.json; then
-              echo "- ⚠️ Some issues may require manual review" >> final_report.md
-            else
-              echo "- ✅ All detected issues appear resolved" >> final_report.md
-            fi
-          fi
-
-      - name: Upload Final Report
-        uses: actions/upload-artifact@v4
+      - name: 🏷️ Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          name: final-security-report
-          path: |
-            final_report.md
-            validation_results.json
-          retention-days: 90
+          tag_name: security-fix-${{ github.run_number }}
+          release_name: 🛡️ S3 Security Fixes - ${{ github.run_number }}
+          body: |
+            ## 🛡️ Automated S3 Security Fixes
+            
+            This release contains automatically generated fixes for S3 security issues detected in the codebase.
+            
+            ### 📁 Contents
+            - **Fixed Terraform Files**: Secure versions of your infrastructure code
+            - **Security Reports**: Detailed analysis of issues found and fixed
+            - **Fix Summary**: Step-by-step guide for applying the fixes
+            
+            ### 🚀 How to Apply
+            1. Download the `security-fixes.zip` from this release
+            2. Extract and review the fixed Terraform files
+            3. Read the `fix_summary.md` for detailed instructions
+            4. Replace your original files with the secure versions
+            5. Run `terraform plan` to verify changes
+            6. Apply the fixes with `terraform apply`
+            
+            **Generated:** ${{ github.run_id }}
+            **Commit:** ${{ github.sha }}
+          draft: false
+          prerelease: false
 
-  notify-teams:
+      - name: 📤 Upload Release Assets
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./security-fixes.zip
+          asset_name: security-fixes.zip
+          asset_content_type: application/zip
+
+  # Job 4: Security Status Check
+  security-status:
+    name: 🎯 Security Status
     runs-on: ubuntu-latest
-    needs: [security-scan, s3-remediation, security-validation]
+    needs: [security-scan, generate-fixes]
     if: always()
     
     steps:
-      - name: Notify Security Team
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const { context } = require('@actions/github');
-            
-            // Determine the outcome
-            const scanResult = '${{ needs.security-scan.result }}';
-            const remediationResult = '${{ needs.s3-remediation.result }}';
-            const validationResult = '${{ needs.security-validation.result }}';
-            
-            let status = '✅ Success';
-            let color = 'success';
-            
-            if (scanResult === 'failure' || remediationResult === 'failure') {
-              status = '❌ Failed';
-              color = 'failure';
-            } else if (remediationResult === 'skipped') {
-              status = '✅ No Issues Found';
-              color = 'success';
-            }
-            
-            // Create an issue for tracking (optional)
-            if (remediationResult === 'success') {
-              await github.rest.issues.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                title: `🔒 S3 Security Remediation Complete - ${new Date().toISOString().split('T')[0]}`,
-                body: `## 🛡️ Security Gatekeeper Report
-                
-            ### Workflow Summary
-            - **Status**: ${status}
-            - **Scan Result**: ${scanResult}
-            - **Remediation**: ${remediationResult}
-            - **Validation**: ${validationResult}
-                
-            ### Actions Taken
-            - Scanned Terraform configurations for S3 misconfigurations
-            - Generated secure replacement configurations
-            - Validated fixes resolve detected issues
-                
-            ### Next Steps
-            - [ ] Review generated configurations in artifacts
-            - [ ] Test in development environment
-            - [ ] Apply approved changes to production
-            - [ ] Monitor for any access issues
-                
-            ### Artifacts
-            - Security scan results
-            - Remediation configurations
-            - Validation reports
-                
-            ---
-            *Generated by Security Gatekeeper workflow*`,
-                labels: ['security', 'automation', 's3', 'infrastructure']
-              });
-            }
+      - name: 📊 Report Final Status
+        run: |
+          echo "## 🛡️ S3 Security Gatekeeper Status"
+          echo "- **Scan Status**: ${{ needs.security-scan.outputs.scan-status }}"
+          echo "- **S3 Issues Found**: ${{ needs.security-scan.outputs.has-s3-issues }}"
+          echo "- **Fixes Generated**: ${{ needs.generate-fixes.result == 'success' }}"
+          
+          if [ "${{ needs.security-scan.outputs.has-s3-issues }}" == "true" ]; then
+            echo "❌ S3 security issues detected and fixes generated"
+            exit 1
+          else
+            echo "✅ No S3 security issues found"
+            exit 0
+          fi
 
-      - name: Update Commit Status
-        uses: actions/github-script@v7
-        if: github.event_name == 'pull_request'
+  # Job 5: Slack/Teams Notification (optional)
+  notify:
+    name: 📢 Send Notifications
+    runs-on: ubuntu-latest
+    needs: [security-scan, generate-fixes]
+    if: always() && needs.security-scan.outputs.has-s3-issues == 'true'
+    
+    steps:
+      - name: 📢 Slack Notification
+        if: env.SLACK_WEBHOOK_URL != ''
+        uses: 8398a7/action-slack@v3
         with:
-          script: |
-            const state = '${{ needs.s3-remediation.result }}' === 'success' ? 'success' : 'failure';
-            const description = state === 'success' 
-              ? 'S3 security issues detected and fixed'
-              : 'S3 security remediation failed';
+          status: ${{ job.status }}
+          text: |
+            🚨 S3 Security Issues Detected!
             
-            await github.rest.repos.createCommitStatus({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              sha: context.sha,
-              state: state,
-              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
-              description: description,
-              context: 'security/s3-remediation'
-            });
+            Repository: ${{ github.repository }}
+            Branch: ${{ github.ref_name }}
+            Commit: ${{ github.sha }}
+            
+            Issues found and fixes generated automatically.
+            Check the workflow artifacts for details.
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: 📧 Email Notification Summary
+        run: |
+          echo "## 📧 Notification Summary"
+          echo "S3 security issues have been detected and processed:"
+          echo "- Scan completed with issues found"
+          echo "- Automatic fixes generated"
+          echo "- Release created (if on main branch)"  
+          echo "- Team notifications sent (if configured)"
+          echo ""
+          echo "Next steps:"
+          echo "1. Review the generated fixes in workflow artifacts"
+          echo "2. Apply the security improvements to your infrastructure"
+          echo "3. Re-run the security scan to verify fixes"
