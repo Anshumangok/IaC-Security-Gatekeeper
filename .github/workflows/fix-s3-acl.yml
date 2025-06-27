@@ -67,7 +67,13 @@ jobs:
           checkov --version
 
       - name: 📁 Create Reports Directory
-        run: mkdir -p checkov_reports scripts
+        run: |
+          mkdir -p checkov_reports scripts
+          echo "Created directories:"
+          ls -la checkov_reports/ scripts/
+          
+          # Create a test file to ensure directory exists
+          echo "test" > checkov_reports/test.txt
 
       - name: 🔍 Debug - List Terraform Files
         if: env.DEBUG == 'true'
