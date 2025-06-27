@@ -1,8 +1,12 @@
+#!/usr/bin/env python3
+"""
+Generate Markdown Report from Checkov JSON Results
+"""
+
 import json
 import os
 from datetime import datetime
 from pathlib import Path
-import sys
 
 # Optional severity fallback if missing
 CHECKOV_SEVERITY_MAP = {
@@ -65,28 +69,25 @@ CHECKOV_SEVERITY_MAP = {
 
 
 def get_severity(check):
+    """Get severity from check, with fallback to predefined map."""
     severity = check.get("severity", "UNKNOWN")
     if severity == "UNKNOWN" or not severity:
         severity = CHECKOV_SEVERITY_MAP.get(check.get("check_id", ""), "UNKNOWN")
     return severity.upper()
 
+
 def truncate(text, limit=40):
+    """Truncate text to specified limit."""
     return text if len(text) <= limit else text[:limit-3] + "..."
 
+
 def extract_filename(path):
+    """Extract filename from path."""
     return os.path.basename(path) if path else "N/A"
 
-def parse_checkov_report(json_path="checkov_reports/report.json"):
-    if not os.path.exists(json_path):
-        return "# ❌ Checkov Report Missing\n\nCould not find Checkov JSON report."
 
-    try:
-        with open(json_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception as e:
-        return f"# ❌ Invalid JSON Report\n\nError: {e}"
-
-    # Detect format
+def parse_checkov_data(data):
+    """Parse Checkov data regardless of format (dict or list)."""
     failed, passed = [], []
 
     if isinstance(data, dict):
@@ -98,12 +99,34 @@ def parse_checkov_report(json_path="checkov_reports/report.json"):
             passed = data.get("passed_checks", [])
     elif isinstance(data, list):
         for item in data:
-            if "results" in item:
-                failed.extend(item["results"].get("failed_checks", []))
+            if isinstance(item, dict):
+                if "results" in item:
+                    failed.extend(item["results"].get("failed_checks", []))
+                    passed.extend(item["results"].get("passed_checks", []))
+                elif "failed_checks" in item:
+                    failed.extend(item.get("failed_checks", []))
+                    passed.extend(item.get("passed_checks", []))
 
-    return generate_markdown_report(failed, passed)
+    return failed, passed
 
-def generate_markdown_report(failed_checks, passed_checks):
+
+def load_checkov_report():
+    """Load the Checkov JSON report."""
+    report_path = Path("checkov_reports/report.json")
+    if not report_path.exists():
+        print(f"Checkov report not found at {report_path}")
+        return None
+    
+    try:
+        with open(report_path, 'r') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Error loading Checkov report: {e}")
+        return None
+
+
+def generate_comprehensive_report(failed_checks, passed_checks):
+    """Generate comprehensive markdown report."""
     report = "# 🛡️ Checkov IaC Security Scan Report\n\n"
     report += f"_Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_\n\n"
     report += f"- ✅ **Passed Checks**: {len(passed_checks)}\n"
@@ -145,53 +168,14 @@ def generate_markdown_report(failed_checks, passed_checks):
 
     return report
 
-def main():
-    os.makedirs("checkov_reports", exist_ok=True)
-    output_path = "checkov_reports/report.md"
-    report = parse_checkov_report()
 
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write(report)
-
-    print(f"[✅] Markdown report saved to {output_path}")
-
-if __name__ == "__main__":
-    main()
-#!/usr/bin/env python3
-"""
-Generate Markdown Report from Checkov JSON Results
-"""
-
-import json
-import os
-from datetime import datetime
-from pathlib import Path
-
-def load_checkov_report():
-    """Load the Checkov JSON report."""
-    report_path = Path("checkov_reports/report.json")
-    if not report_path.exists():
-        print(f"Checkov report not found at {report_path}")
-        return None
-    
-    try:
-        with open(report_path, 'r') as f:
-            return json.load(f)
-    except Exception as e:
-        print(f"Error loading Checkov report: {e}")
-        return None
-
-def generate_markdown_report(checkov_data):
-    """Generate a markdown report from Checkov data."""
-    if not checkov_data:
-        return "# Security Scan Report\n\nNo scan data available."
-    
-    # Extract relevant information
-    failed_checks = checkov_data.get('results', {}).get('failed_checks', [])
-    passed_checks = checkov_data.get('results', {}).get('passed_checks', [])
-    
+def generate_s3_focused_report(failed_checks, passed_checks):
+    """Generate S3-focused markdown report."""
     # Filter for S3-related checks
-    s3_failed = [check for check in failed_checks if 'S3' in check.get('check_name', '') or 'CKV_AWS_20' in check.get('check_id', '') or 'CKV_AWS_21' in check.get('check_id', '') or 'CKV2_AWS_6' in check.get('check_id', '')]
+    s3_failed = [check for check in failed_checks if 
+                 'S3' in check.get('check_name', '').upper() or 
+                 'BUCKET' in check.get('check_name', '').upper() or
+                 check.get('check_id', '') in ['CKV_AWS_20', 'CKV_AWS_21', 'CKV2_AWS_6', 'CKV_AWS_18', 'CKV_AWS_19', 'CKV_AWS_144', 'CKV_AWS_145']]
     
     report = f"""# 🛡️ S3 Security Scan Report
 
@@ -216,7 +200,7 @@ def generate_markdown_report(checkov_data):
 - **Check ID:** `{check.get('check_id', 'N/A')}`
 - **File:** `{check.get('file_path', 'N/A')}`
 - **Resource:** `{check.get('resource', 'N/A')}`
-- **Severity:** {check.get('severity', 'UNKNOWN')}
+- **Severity:** {get_severity(check)}
 
 **Description:** {check.get('description', 'No description available')}
 
@@ -246,25 +230,40 @@ def generate_markdown_report(checkov_data):
     
     return report
 
+
 def main():
     """Main function to generate the report."""
     print("📋 Generating security scan report...")
     
     # Load Checkov data
     checkov_data = load_checkov_report()
+    if not checkov_data:
+        print("❌ No Checkov data available")
+        return
+
+    # Parse the data using the robust parser
+    failed_checks, passed_checks = parse_checkov_data(checkov_data)
     
-    # Generate markdown report
-    report = generate_markdown_report(checkov_data)
+    print(f"📊 Found {len(failed_checks)} failed checks and {len(passed_checks)} passed checks")
     
-    # Save the report
+    # Create reports directory
     report_dir = Path("checkov_reports")
     report_dir.mkdir(exist_ok=True)
     
-    report_path = report_dir / "security_report.md"
-    with open(report_path, 'w', encoding='utf-8') as f:
-        f.write(report)
+    # Generate comprehensive report
+    comprehensive_report = generate_comprehensive_report(failed_checks, passed_checks)
+    comprehensive_path = report_dir / "report.md"
+    with open(comprehensive_path, 'w', encoding='utf-8') as f:
+        f.write(comprehensive_report)
+    print(f"✅ Comprehensive report generated: {comprehensive_path}")
     
-    print(f"✅ Report generated: {report_path}")
+    # Generate S3-focused report
+    s3_report = generate_s3_focused_report(failed_checks, passed_checks)
+    s3_path = report_dir / "security_report.md"
+    with open(s3_path, 'w', encoding='utf-8') as f:
+        f.write(s3_report)
+    print(f"✅ S3-focused report generated: {s3_path}")
+
 
 if __name__ == "__main__":
     main()
