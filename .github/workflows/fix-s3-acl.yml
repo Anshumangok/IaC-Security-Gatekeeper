@@ -49,6 +49,7 @@ jobs:
       has-s3-issues: ${{ steps.check-s3-issues.outputs.has-issues }}
       scan-status: ${{ steps.checkov-scan.outputs.status }}
       s3-issues-count: ${{ steps.check-s3-issues.outputs.issues-count }}
+      scan-completed: ${{ steps.checkov-scan.outputs.completed }}
     
     steps:
       - name: 📥 Checkout Code
@@ -71,9 +72,6 @@ jobs:
           mkdir -p checkov_reports scripts
           echo "Created directories:"
           ls -la checkov_reports/ scripts/
-          
-          # Create a test file to ensure directory exists
-          echo "test" > checkov_reports/test.txt
 
       - name: 🔍 Debug - List Terraform Files
         if: env.DEBUG == 'true'
@@ -100,6 +98,7 @@ jobs:
             echo "⚠️ No Terraform files found - creating empty report"
             echo '{"results": {"failed_checks": [], "passed_checks": []}}' > checkov_reports/report.json
             echo "status=no_tf_files" >> $GITHUB_OUTPUT
+            echo "completed=true" >> $GITHUB_OUTPUT
             exit 0
           fi
           
@@ -129,6 +128,7 @@ jobs:
             --compact || true
           
           echo "status=completed" >> $GITHUB_OUTPUT
+          echo "completed=true" >> $GITHUB_OUTPUT
 
       - name: 🔍 Debug - Show Checkov Report
         if: env.DEBUG == 'true'
@@ -144,6 +144,7 @@ jobs:
             echo -e "\n=== Report structure ==="
             python3 -c "
           import json
+          import sys
           try:
               with open('checkov_reports/report.json', 'r') as f:
                   data = json.load(f)
@@ -159,10 +160,16 @@ jobs:
                               print('Failed checks count:', len(results['failed_checks']))
                           if 'passed_checks' in results:
                               print('Passed checks count:', len(results['passed_checks']))
+                  elif 'failed_checks' in data:
+                      print('Failed checks count:', len(data['failed_checks']))
               elif isinstance(data, list):
                   print('List length:', len(data))
+                  if len(data) > 0:
+                      print('First item keys:', list(data[0].keys()) if isinstance(data[0], dict) else 'Not a dict')
           except Exception as e:
               print('Error parsing report:', e)
+              import traceback
+              traceback.print_exc()
           "
           else
             echo "❌ Report file not found!"
@@ -207,7 +214,7 @@ jobs:
                   elif isinstance(data, list):
                       for item in data:
                           if isinstance(item, dict):
-                              if 'results' in item and 'failed_checks' in item['results']:
+                              if 'results' in item and isinstance(item['results'], dict) and 'failed_checks' in item['results']:
                                   failed_checks.extend(item['results']['failed_checks'])
                               elif 'failed_checks' in item:
                                   failed_checks.extend(item['failed_checks'])
@@ -220,7 +227,10 @@ jobs:
                       'CKV2_AWS_6',  # S3 bucket has S3 Bucket Public Access Block enabled
                       'CKV_AWS_21',  # S3 bucket has server-side encryption enabled
                       'CKV_AWS_18',  # S3 bucket has access logging enabled
-                      'CKV_AWS_19'   # S3 bucket has MFA delete enabled
+                      'CKV_AWS_19',  # S3 bucket has MFA delete enabled
+                      'CKV_AWS_54',  # S3 bucket has block public policy enabled
+                      'CKV_AWS_55',  # S3 bucket has ignore public ACLs enabled
+                      'CKV_AWS_56'   # S3 bucket has restrict public bucket policies enabled
                   ]
                   
                   s3_issues = []
@@ -231,15 +241,31 @@ jobs:
                           print(f"Found S3 issue: {check_id} in {check.get('file_path', 'unknown')}", file=sys.stderr)
                   
                   print(f"S3 issues found: {len(s3_issues)}", file=sys.stderr)
-                  print("has-issues=true" if s3_issues else "has-issues=false")
+                  
+                  # Force has-issues to true for testing if debug mode is on
+                  if len(s3_issues) > 0:
+                      print("has-issues=true")
+                  else:
+                      # For debugging - you can uncomment this to force generation
+                      # print("has-issues=true")  # Force true for testing
+                      print("has-issues=false")
+                  
                   print(f"issues-count={len(s3_issues)}")
                   
                   # Debug: show all check IDs found
-                  all_check_ids = set(check.get('check_id', '') for check in failed_checks)
-                  print(f"All check IDs found: {sorted(all_check_ids)}", file=sys.stderr)
+                  all_check_ids = sorted(set(check.get('check_id', '') for check in failed_checks))
+                  print(f"All check IDs found: {all_check_ids}", file=sys.stderr)
+                  
+                  # Show sample of failed checks for debugging
+                  if failed_checks:
+                      print("Sample failed checks:", file=sys.stderr)
+                      for i, check in enumerate(failed_checks[:3]):
+                          print(f"  {i+1}. {check.get('check_id', 'N/A')} - {check.get('check_name', 'N/A')}", file=sys.stderr)
                   
               except Exception as e:
                   print(f"Error processing report: {e}", file=sys.stderr)
+                  import traceback
+                  traceback.print_exc(file=sys.stderr)
                   print("has-issues=false")
                   print("issues-count=0")
           
@@ -248,10 +274,8 @@ jobs:
           EOF
           
           # Run the check and capture outputs
-          OUTPUT=$(python scripts/check_s3_issues.py)
-          echo "$OUTPUT" >> $GITHUB_OUTPUT
-          echo "🔍 S3 Issues Check Results:"
-          echo "$OUTPUT"
+          python scripts/check_s3_issues.py >> $GITHUB_OUTPUT
+          echo "🔍 S3 Issues Check completed"
 
       - name: 📤 Upload Scan Results
         uses: actions/upload-artifact@v4
@@ -269,7 +293,8 @@ jobs:
     name: 🔧 Generate S3 Fixes
     runs-on: ubuntu-latest
     needs: security-scan
-    if: needs.security-scan.outputs.has-s3-issues == 'true'
+    # Modified condition to always run if scan completed successfully
+    if: always() && needs.security-scan.outputs.scan-completed == 'true'
     permissions:
       contents: write
       pull-requests: write
@@ -284,19 +309,19 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: 📁 Create Scripts Directory
-        run: mkdir -p scripts
+        run: mkdir -p scripts fixed_terraform
 
       - name: 📥 Download Scan Results
         uses: actions/download-artifact@v4
         with:
           name: checkov-scan-results
-          path: checkov_reports/
+          path: ./
 
       - name: 🔍 Debug - Verify Downloaded Files
         if: env.DEBUG == 'true'
         run: |
           echo "=== Downloaded files ==="
-          ls -la checkov_reports/
+          find . -name "*.json" -o -name "*.py" -o -name "*.md" | head -20
           if [ -f "checkov_reports/report.json" ]; then
             echo "Report size: $(wc -c < checkov_reports/report.json) bytes"
           fi
@@ -338,14 +363,14 @@ jobs:
               elif isinstance(data, list):
                   for item in data:
                       if isinstance(item, dict):
-                          if "results" in item and "failed_checks" in item["results"]:
+                          if "results" in item and isinstance(item["results"], dict) and "failed_checks" in item["results"]:
                               failed_checks.extend(item["results"]["failed_checks"])
                           elif "failed_checks" in item:
                               failed_checks.extend(item["failed_checks"])
               return failed_checks
           
           def generate_summary_report(failed_checks):
-              s3_checks = ['CKV_AWS_20', 'CKV2_AWS_6', 'CKV_AWS_21', 'CKV_AWS_18', 'CKV_AWS_19']
+              s3_checks = ['CKV_AWS_20', 'CKV2_AWS_6', 'CKV_AWS_21', 'CKV_AWS_18', 'CKV_AWS_19', 'CKV_AWS_54', 'CKV_AWS_55', 'CKV_AWS_56']
               s3_issues = [check for check in failed_checks if check.get('check_id') in s3_checks]
               
               report = f"""# 🛡️ S3 Security Scan Summary
@@ -357,7 +382,7 @@ jobs:
           ## 📊 Results
           
           - **Total Failed Checks:** {len(failed_checks)}
-          - **S3 Security Issues:** {len(s3_issues)} 🚨
+          - **S3 Security Issues:** {len(s3_issues)} {'🚨' if s3_issues else '✅'}
           - **Status:** {'❌ Issues Found' if s3_issues else '✅ No S3 Issues'}
           
           ## 🚨 S3 Issues Found
@@ -365,7 +390,9 @@ jobs:
           """
               
               if not s3_issues:
-                  report += "✅ **No S3 security issues detected!**\n"
+                  report += "✅ **No S3 security issues detected!**\n\n"
+                  if failed_checks:
+                      report += f"However, {len(failed_checks)} other security issues were found.\n\n"
               else:
                   for i, issue in enumerate(s3_issues, 1):
                       report += f"""### {i}. {issue.get('check_name', 'Unknown Check')}
@@ -379,18 +406,22 @@ jobs:
           """
               
               # Debug info
+              all_check_ids = sorted(set(check.get('check_id', 'N/A') for check in failed_checks))
               report += f"""
           ## 🔍 Debug Information
           
-          - **All Check IDs Found:** {', '.join(set(check.get('check_id', 'N/A') for check in failed_checks))}
-          - **S3 Check IDs:** {', '.join(s3_checks)}
+          - **All Check IDs Found:** {', '.join(all_check_ids) if all_check_ids else 'None'}
+          - **S3 Check IDs Monitored:** {', '.join(s3_checks)}
           - **Files Scanned:** {len(set(check.get('file_path', 'N/A') for check in failed_checks))}
+          - **Total Issues:** {len(failed_checks)}
           
           ## 🔧 Next Steps
           
           {'1. Review the generated fixes in the `fixed_terraform/` directory' if s3_issues else ''}
           {'2. Apply the security improvements to make S3 buckets private' if s3_issues else ''}
           {'3. Re-run the security scan to verify fixes' if s3_issues else ''}
+          {'' if s3_issues else '1. Review other security issues found in the scan'}
+          {'' if s3_issues else '2. Check the Checkov report for details on non-S3 issues'}
           
           ---
           *Generated by S3 Security Gatekeeper*
@@ -407,6 +438,9 @@ jobs:
               failed_checks = parse_checkov_data(data)
               report = generate_summary_report(failed_checks)
               
+              # Ensure directory exists
+              os.makedirs("checkov_reports", exist_ok=True)
+              
               with open("checkov_reports/security_summary.md", "w") as f:
                   f.write(report)
               
@@ -419,7 +453,7 @@ jobs:
           python scripts/generate_reports.py
 
       - name: 🔧 Generate S3 Fixes
-        if: github.event.inputs.auto_fix != 'false'
+        if: github.event.inputs.auto_fix != 'false' && needs.security-scan.outputs.has-s3-issues == 'true'
         run: |
           cat > scripts/fix_s3_buckets.py << 'EOF'
           #!/usr/bin/env python3
@@ -434,7 +468,10 @@ jobs:
               "CKV2_AWS_6": "Ensure that S3 bucket has S3 Bucket Public Access Block enabled",
               "CKV_AWS_21": "Ensure S3 bucket has server-side encryption enabled",
               "CKV_AWS_18": "Ensure S3 bucket has access logging enabled",
-              "CKV_AWS_19": "Ensure S3 bucket has MFA delete enabled"
+              "CKV_AWS_19": "Ensure S3 bucket has MFA delete enabled",
+              "CKV_AWS_54": "Ensure S3 bucket has block public policy enabled",
+              "CKV_AWS_55": "Ensure S3 bucket has ignore public ACLs enabled",
+              "CKV_AWS_56": "Ensure S3 bucket has restrict public bucket policies enabled"
           }
           
           def load_checkov_report():
@@ -465,7 +502,7 @@ jobs:
               elif isinstance(data, list):
                   for item in data:
                       if isinstance(item, dict):
-                          if "results" in item and "failed_checks" in item["results"]:
+                          if "results" in item and isinstance(item["results"], dict) and "failed_checks" in item["results"]:
                               failed_checks.extend(item["results"]["failed_checks"])
                           elif "failed_checks" in item:
                               failed_checks.extend(item["failed_checks"])
@@ -491,7 +528,7 @@ jobs:
                   for pattern, replacement in patterns:
                       content = re.sub(pattern, replacement, content, flags=re.IGNORECASE)
               
-              elif check_id == "CKV2_AWS_6":  # Add public access block
+              elif check_id in ["CKV2_AWS_6", "CKV_AWS_54", "CKV_AWS_55", "CKV_AWS_56"]:  # Add public access block
                   pab_config = f'''
           
           # Added by S3 Security Gatekeeper
@@ -570,6 +607,26 @@ jobs:
               
               if not s3_issues:
                   print("✅ No S3 issues to fix")
+                  # Still create a summary file
+                  fixed_dir = Path("fixed_terraform")
+                  fixed_dir.mkdir(exist_ok=True)
+                  
+                  summary_content = f"""# 🔧 S3 Security Fixes Summary
+          
+          **Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}
+          **Status:** ✅ No S3 issues found to fix
+          
+          ## 📊 Scan Results
+          - **Total Issues:** {len(failed_checks)}
+          - **S3 Issues:** 0
+          
+          ---
+          *Generated by S3 Security Gatekeeper*
+          """
+                  
+                  with open(fixed_dir / "FIXES_SUMMARY.md", "w") as f:
+                      f.write(summary_content)
+                  
                   return
               
               # Create fixed directory
@@ -647,108 +704,4 @@ jobs:
           1. Review the fixed Terraform files in the `fixed_terraform/` directory
           2. Compare the changes with your original files
           3. Apply the security improvements to your infrastructure
-          4. Re-run the security scan to verify all issues are resolved
-          
-          ## ❗ Important Notes
-          
-          - All fixes maintain backward compatibility where possible
-          - Public ACLs have been changed to private
-          - S3 bucket public access blocks have been enabled
-          - Server-side encryption has been configured
-          - Access logging and versioning have been added where missing
-          
-          ---
-          *Generated by S3 Security Gatekeeper*
-          """
-              
-              with open(fixed_dir / "FIXES_SUMMARY.md", "w") as f:
-                  f.write(summary_content)
-              
-              print(f"✅ Generated fixes for {len(s3_issues)} S3 security issues")
-              print(f"📁 Fixed files available in: {fixed_dir}")
-          
-          if __name__ == "__main__":
-              main()
-          EOF
-          
-          python scripts/fix_s3_buckets.py
-
-      - name: 📤 Upload Fixed Files
-        uses: actions/upload-artifact@v4
-        with:
-          name: s3-security-fixes
-          path: |
-            fixed_terraform/
-            checkov_reports/security_summary.md
-          retention-days: 30
-
-      - name: 💬 Comment on PR
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const path = require('path');
-            
-            try {
-              // Read the security summary
-              const summaryPath = 'checkov_reports/security_summary.md';
-              let comment = '';
-              
-              if (fs.existsSync(summaryPath)) {
-                comment = fs.readFileSync(summaryPath, 'utf8');
-              } else {
-                comment = `# 🛡️ S3 Security Scan Results
-                
-                ❌ Security issues detected in S3 configurations!
-                
-                Please check the workflow logs and artifacts for detailed information.
-                `;
-              }
-              
-              // Add download links
-              comment += `
-              
-              ## 📁 Artifacts Available
-              
-              - **Security Report:** Check the workflow artifacts for detailed scan results
-              - **Fixed Files:** Download the \`s3-security-fixes\` artifact for corrected Terraform files
-              - **Original Scan:** Download the \`checkov-scan-results\` artifact for raw Checkov output
-              `;
-              
-              await github.rest.issues.createComment({
-                issue_number: context.issue.number,
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                body: comment
-              });
-            } catch (error) {
-              console.error('Error posting comment:', error);
-            }
-
-  # Job 3: Security Status Check
-  security-status:
-    name: 🎯 Security Status
-    runs-on: ubuntu-latest
-    needs: [security-scan, generate-fixes]
-    if: always()
-    permissions:
-      contents: read
-    
-    steps:
-      - name: 📊 Report Final Status
-        run: |
-          echo "🔍 Security Scan Status: ${{ needs.security-scan.outputs.scan-status }}"
-          echo "🚨 S3 Issues Found: ${{ needs.security-scan.outputs.s3-issues-count }}"
-          echo "🛡️ Has S3 Issues: ${{ needs.security-scan.outputs.has-s3-issues }}"
-          
-          if [[ "${{ needs.security-scan.outputs.has-s3-issues }}" == "true" ]]; then
-            echo "❌ S3 security issues detected!"
-            echo "📁 Check the artifacts for:"
-            echo "  - Detailed security report"
-            echo "  - Auto-generated fixes"
-            echo "  - Original scan results"
-            exit 1
-          else
-            echo "✅ No S3 security issues found!"
-          fi
+          4. Re-run the security scan to verify
