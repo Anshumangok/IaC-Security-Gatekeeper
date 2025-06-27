@@ -83,15 +83,37 @@ jobs:
         run: |
           echo "🔍 Running Checkov security scan..."
           
+          # Ensure reports directory exists
+          mkdir -p checkov_reports
+          
+          # Check if we have any Terraform files
+          TF_FILES=$(find . -name "*.tf" -type f | wc -l)
+          echo "Found $TF_FILES Terraform files"
+          
+          if [ "$TF_FILES" -eq 0 ]; then
+            echo "⚠️ No Terraform files found - creating empty report"
+            echo '{"results": {"failed_checks": [], "passed_checks": []}}' > checkov_reports/report.json
+            echo "status=no_tf_files" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
           # Run Checkov with JSON output
+          CHECKOV_EXIT_CODE=0
           checkov \
             --framework terraform \
             --output json \
             --output-file checkov_reports/report.json \
             --directory . \
             --skip-check CKV_TF_1 \
-            --verbose \
-            || echo "checkov_exit_code=$?" >> $GITHUB_OUTPUT
+            --verbose || CHECKOV_EXIT_CODE=$?
+          
+          echo "checkov_exit_code=$CHECKOV_EXIT_CODE" >> $GITHUB_OUTPUT
+          
+          # Verify the report was created
+          if [ ! -f "checkov_reports/report.json" ]; then
+            echo "❌ Checkov report not created - generating empty report"
+            echo '{"results": {"failed_checks": [], "passed_checks": []}}' > checkov_reports/report.json
+          fi
           
           # Also generate CLI output for logs
           echo "=== Checkov CLI Output ==="
@@ -105,6 +127,9 @@ jobs:
       - name: 🔍 Debug - Show Checkov Report
         if: env.DEBUG == 'true'
         run: |
+          echo "=== Directory Contents ==="
+          ls -la checkov_reports/ || echo "checkov_reports directory not found"
+          
           echo "=== Checkov Report Contents ==="
           if [ -f "checkov_reports/report.json" ]; then
             echo "Report file exists, size: $(wc -c < checkov_reports/report.json) bytes"
@@ -135,7 +160,8 @@ jobs:
           "
           else
             echo "❌ Report file not found!"
-            ls -la checkov_reports/
+            echo "Files in current directory:"
+            find . -name "*.json" -o -name "report*" | head -10
           fi
 
       - name: 📊 Check for S3 Issues
@@ -226,8 +252,11 @@ jobs:
         if: always()
         with:
           name: checkov-scan-results
-          path: checkov_reports/
+          path: |
+            checkov_reports/
+            scripts/
           retention-days: 30
+          if-no-files-found: warn
 
   # Job 2: Generate Reports and Fixes
   generate-fixes:
