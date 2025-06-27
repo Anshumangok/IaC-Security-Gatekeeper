@@ -453,7 +453,6 @@ jobs:
           python scripts/generate_reports.py
 
       - name: 🔧 Generate S3 Fixes
-        if: github.event.inputs.auto_fix != 'false' && needs.security-scan.outputs.has-s3-issues == 'true'
         run: |
           cat > scripts/fix_s3_buckets.py << 'EOF'
           #!/usr/bin/env python3
@@ -518,78 +517,82 @@ jobs:
               return resource_name.replace('aws_s3_bucket.', '').replace('_acl', '').replace('_bucket', '')
           
           def fix_terraform_content(content, resource_name, check_id):
-              bucket_name = extract_bucket_name(resource_name)
-              
-              if check_id == "CKV_AWS_20":  # Fix public ACL
-                  patterns = [
-                      (r'acl\s*=\s*"public-read"', 'acl = "private"'),
-                      (r'acl\s*=\s*"public-read-write"', 'acl = "private"'),
-                  ]
-                  for pattern, replacement in patterns:
-                      content = re.sub(pattern, replacement, content, flags=re.IGNORECASE)
-              
-              elif check_id in ["CKV2_AWS_6", "CKV_AWS_54", "CKV_AWS_55", "CKV_AWS_56"]:  # Add public access block
-                  pab_config = f'''
-          
-          # Added by S3 Security Gatekeeper
-          resource "aws_s3_bucket_public_access_block" "{bucket_name}_pab" {{
-            bucket = aws_s3_bucket.{bucket_name}.id
-          
-            block_public_acls       = true
-            block_public_policy     = true
-            ignore_public_acls      = true
-            restrict_public_buckets = true
-          }}'''
-                  if f'{bucket_name}_pab' not in content and 'aws_s3_bucket_public_access_block' not in content:
-                      content += pab_config
-              
-              elif check_id == "CKV_AWS_21":  # Add encryption
-                  encrypt_config = f'''
-          
-          # Added by S3 Security Gatekeeper
-          resource "aws_s3_bucket_server_side_encryption_configuration" "{bucket_name}_encryption" {{
-            bucket = aws_s3_bucket.{bucket_name}.id
-          
-            rule {{
-              apply_server_side_encryption_by_default {{
-                sse_algorithm = "AES256"
-              }}
-            }}
-          }}'''
-                  if f'{bucket_name}_encryption' not in content:
-                      content += encrypt_config
-              
-              elif check_id == "CKV_AWS_18":  # Add access logging
-                  logging_config = f'''
-          
-          # Added by S3 Security Gatekeeper
-          resource "aws_s3_bucket" "{bucket_name}_logs" {{
-            bucket = "{bucket_name}-access-logs"
-          }}
-          
-          resource "aws_s3_bucket_logging" "{bucket_name}_logging" {{
-            bucket = aws_s3_bucket.{bucket_name}.id
-          
-            target_bucket = aws_s3_bucket.{bucket_name}_logs.id
-            target_prefix = "access-logs/"
-          }}'''
-                  if f'{bucket_name}_logging' not in content:
-                      content += logging_config
-              
-              elif check_id == "CKV_AWS_19":  # Add versioning
-                  versioning_config = f'''
-          
-          # Added by S3 Security Gatekeeper
-          resource "aws_s3_bucket_versioning" "{bucket_name}_versioning" {{
-            bucket = aws_s3_bucket.{bucket_name}.id
-            versioning_configuration {{
-              status = "Enabled"
-            }}
-          }}'''
-                  if f'{bucket_name}_versioning' not in content:
-                      content += versioning_config
-              
-              return content
+              try:
+                  bucket_name = extract_bucket_name(resource_name)
+                  
+                  if check_id == "CKV_AWS_20":  # Fix public ACL
+                      patterns = [
+                          (r'acl\s*=\s*"public-read"', 'acl = "private"'),
+                          (r'acl\s*=\s*"public-read-write"', 'acl = "private"'),
+                      ]
+                      for pattern, replacement in patterns:
+                          content = re.sub(pattern, replacement, content, flags=re.IGNORECASE)
+                  
+                  elif check_id in ["CKV2_AWS_6", "CKV_AWS_54", "CKV_AWS_55", "CKV_AWS_56"]:  # Add public access block
+                      pab_config = f'''
+
+# Added by S3 Security Gatekeeper
+resource "aws_s3_bucket_public_access_block" "{bucket_name}_pab" {{
+  bucket = aws_s3_bucket.{bucket_name}.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}}'''
+                      if f'{bucket_name}_pab' not in content and 'aws_s3_bucket_public_access_block' not in content:
+                          content += pab_config
+                  
+                  elif check_id == "CKV_AWS_21":  # Add encryption
+                      encrypt_config = f'''
+
+# Added by S3 Security Gatekeeper
+resource "aws_s3_bucket_server_side_encryption_configuration" "{bucket_name}_encryption" {{
+  bucket = aws_s3_bucket.{bucket_name}.id
+
+  rule {{
+    apply_server_side_encryption_by_default {{
+      sse_algorithm = "AES256"
+    }}
+  }}
+}}'''
+                      if f'{bucket_name}_encryption' not in content:
+                          content += encrypt_config
+                  
+                  elif check_id == "CKV_AWS_18":  # Add access logging
+                      logging_config = f'''
+
+# Added by S3 Security Gatekeeper
+resource "aws_s3_bucket" "{bucket_name}_logs" {{
+  bucket = "{bucket_name}-access-logs"
+}}
+
+resource "aws_s3_bucket_logging" "{bucket_name}_logging" {{
+  bucket = aws_s3_bucket.{bucket_name}.id
+
+  target_bucket = aws_s3_bucket.{bucket_name}_logs.id
+  target_prefix = "access-logs/"
+}}'''
+                      if f'{bucket_name}_logging' not in content:
+                          content += logging_config
+                  
+                  elif check_id == "CKV_AWS_19":  # Add versioning
+                      versioning_config = f'''
+
+# Added by S3 Security Gatekeeper
+resource "aws_s3_bucket_versioning" "{bucket_name}_versioning" {{
+  bucket = aws_s3_bucket.{bucket_name}.id
+  versioning_configuration {{
+    status = "Enabled"
+  }}
+}}'''
+                      if f'{bucket_name}_versioning' not in content:
+                          content += versioning_config
+                  
+                  return content
+              except Exception as e:
+                  print(f"Error in fix_terraform_content: {e}")
+                  return content
           
           def main():
               print("🔧 Starting S3 fixes generation...")
@@ -605,33 +608,30 @@ jobs:
               print(f"🔍 Total failed checks: {len(failed_checks)}")
               print(f"🔍 S3 issues found: {len(s3_issues)}")
               
+              # Create fixed directory
+              fixed_dir = Path("fixed_terraform")
+              fixed_dir.mkdir(exist_ok=True)
+              
               if not s3_issues:
                   print("✅ No S3 issues to fix")
                   # Still create a summary file
-                  fixed_dir = Path("fixed_terraform")
-                  fixed_dir.mkdir(exist_ok=True)
-                  
                   summary_content = f"""# 🔧 S3 Security Fixes Summary
-          
-          **Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}
-          **Status:** ✅ No S3 issues found to fix
-          
-          ## 📊 Scan Results
-          - **Total Issues:** {len(failed_checks)}
-          - **S3 Issues:** 0
-          
-          ---
-          *Generated by S3 Security Gatekeeper*
-          """
+
+**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}
+**Status:** ✅ No S3 issues found to fix
+
+## 📊 Scan Results
+- **Total Issues:** {len(failed_checks)}
+- **S3 Issues:** 0
+
+---
+*Generated by S3 Security Gatekeeper*
+"""
                   
                   with open(fixed_dir / "FIXES_SUMMARY.md", "w") as f:
                       f.write(summary_content)
                   
                   return
-              
-              # Create fixed directory
-              fixed_dir = Path("fixed_terraform")
-              fixed_dir.mkdir(exist_ok=True)
               
               files_processed = set()
               
@@ -647,7 +647,7 @@ jobs:
                   print(f"🔧 Processing {file_path}")
                   
                   try:
-                      with open(file_path, 'r') as f:
+                      with open(file_path, 'r', encoding='utf-8') as f:
                           content = f.read()
                       
                       original_content = content
@@ -663,7 +663,7 @@ jobs:
                       # Only write if content changed
                       if content != original_content:
                           output_path = fixed_dir / os.path.basename(file_path)
-                          with open(output_path, 'w') as f:
+                          with open(output_path, 'w', encoding='utf-8') as f:
                               f.write(content)
                           print(f"  ✅ Fixed version saved to: {output_path}")
                       else:
@@ -673,17 +673,19 @@ jobs:
                       
                   except Exception as e:
                       print(f"  ❌ Error processing {file_path}: {e}")
+                      import traceback
+                      traceback.print_exc()
               
               # Generate summary
               summary_content = f"""# 🔧 S3 Security Fixes Applied
-          
-          **Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}
-          **Files Processed:** {len(files_processed)}
-          **Issues Fixed:** {len(s3_issues)}
-          
-          ## 📋 Fixes Applied
-          
-          """
+
+**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}
+**Files Processed:** {len(files_processed)}
+**Issues Fixed:** {len(s3_issues)}
+
+## 📋 Fixes Applied
+
+"""
               
               for issue in s3_issues:
                   file_path = issue.get("file_path", "N/A")
@@ -692,16 +694,31 @@ jobs:
                   description = S3_PUBLIC_CHECKS.get(check_id, "Unknown check")
                   
                   summary_content += f"""### {check_id}
-          - **File:** `{file_path}`
-          - **Resource:** `{resource}`
-          - **Fix:** {description}
-          
-          """
+- **File:** `{file_path}`
+- **Resource:** `{resource}`
+- **Fix:** {description}
+
+"""
               
               summary_content += """
-          ## 🚀 Next Steps
+## 🚀 Next Steps
+
+1. Review the fixed Terraform files in the `fixed_terraform/` directory
+2. Compare the changes with your original files
+3. Apply the security improvements to your infrastructure
+4. Re-run the security scan to verify fixes
+
+---
+*Generated by S3 Security Gatekeeper*
+"""
+              
+              with open(fixed_dir / "FIXES_SUMMARY.md", "w") as f:
+                  f.write(summary_content)
+              
+              print("✅ S3 fixes generation completed")
           
-          1. Review the fixed Terraform files in the `fixed_terraform/` directory
-          2. Compare the changes with your original files
-          3. Apply the security improvements to your infrastructure
-          4. Re-run the security scan to verify
+          if __name__ == "__main__":
+              main()
+          EOF
+          
+          python scripts/
