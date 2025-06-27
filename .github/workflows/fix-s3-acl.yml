@@ -721,4 +721,18 @@ resource "aws_s3_bucket_versioning" "{bucket_name}_versioning" {{
               main()
           EOF
           
-          python scripts/
+          python scripts/fix_s3_buckets.py
+
+      - name: 📤 Upload Fixed Files
+        uses: actions/upload-artifact@v4
+        with:
+          name: fixed-terraform
+          path: fixed_terraform/
+          if-no-files-found: warn
+
+      - name: 📤 Upload Markdown Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: s3-security-summary
+          path: checkov_reports/security_summary.md
+          if-no-files-found: warn
