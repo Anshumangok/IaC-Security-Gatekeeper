@@ -720,7 +720,9 @@ resource "aws_s3_bucket_versioning" "{bucket_name}_versioning" {{
           if __name__ == "__main__":
               main()
           EOF
-          
+
+      - name: 🛠 Run Fix Script
+        run: |
           python scripts/fix_s3_buckets.py
 
       - name: 📝 Create Fix Instructions
@@ -954,6 +956,3 @@ resource "aws_s3_bucket_versioning" "{bucket_name}_versioning" {{
           sarif_file: checkov_reports/
         continue-on-error: true
 
-      - name: 🛠 Run Fix Script
-        run: |
-          python scripts/fix_s3_acl_rule_based_buckets.py
