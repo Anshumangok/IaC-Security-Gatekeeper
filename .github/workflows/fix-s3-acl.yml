@@ -956,4 +956,4 @@ resource "aws_s3_bucket_versioning" "{bucket_name}_versioning" {{
 
       - name: 🛠 Run Fix Script
         run: |
-          python scripts/fix_s3_buckets.py
+          python scripts/fix_s3_acl_rule_based_buckets.py
