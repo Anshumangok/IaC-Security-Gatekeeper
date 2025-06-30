@@ -6,12 +6,10 @@ Automatically fixes S3 bucket security misconfigurations in Terraform files.
 """
 
 import os
-import json
 import re
+import argparse
 from pathlib import Path
 from datetime import datetime
-import argparse
-
 
 class S3SecurityRemediator:
     def __init__(self, source_dir="terraform", dry_run=True):
@@ -20,7 +18,6 @@ class S3SecurityRemediator:
         self.fix_artifacts_dir = Path("fix_artifacts")
         self.fixes_applied = []
         self.issues_found = []
-
         self.fix_artifacts_dir.mkdir(exist_ok=True)
 
     def scan_terraform_files(self):
@@ -37,7 +34,6 @@ class S3SecurityRemediator:
     def find_s3_buckets(self, content):
         bucket_pattern = r'resource\s+"aws_s3_bucket"\s+"([^"]+)"\s*\{([^}]*(?:\{[^}]*\}[^}]*)*)\}'
         buckets = []
-
         for match in re.finditer(bucket_pattern, content, re.DOTALL):
             buckets.append({
                 'name': match.group(1),
@@ -46,7 +42,6 @@ class S3SecurityRemediator:
                 'start': match.start(),
                 'end': match.end()
             })
-
         return buckets
 
     def check_bucket_security_issues(self, config):
@@ -158,7 +153,6 @@ resource "aws_s3_bucket_public_access_block" "{bucket_name}_pab" {{
         self.generate_report()
         print("✅ Done.")
 
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-dir", default="terraform")
@@ -168,7 +162,6 @@ def main():
     dry_run = not args.live
     remediator = S3SecurityRemediator(source_dir=args.source_dir, dry_run=dry_run)
     remediator.run()
-
 
 if __name__ == "__main__":
     main()
