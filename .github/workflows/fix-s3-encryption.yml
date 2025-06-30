@@ -4,7 +4,7 @@ on:
   workflow_dispatch:  # Manual trigger from GitHub UI
 
 jobs:
-  fix-s3-encryption:
+  fix_s3_encryption:
     name: 🛠️ Auto-Fix: S3 Encryption in Terraform
     runs-on: ubuntu-latest
 
