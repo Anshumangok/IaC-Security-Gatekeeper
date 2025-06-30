@@ -540,11 +540,11 @@ resource "aws_s3_bucket_public_access_block" "{bucket_name}_pab" {{
   ignore_public_acls      = true
   restrict_public_buckets = true
 }}'''
-                      if f'{bucket_name}_pab' not in content and 'aws_s3_bucket_public_access_block' not in content:
-                          content += pab_config
-                  
-                  elif check_id == "CKV_AWS_21":  # Add encryption
-                      encrypt_config = f'''
+    if f'{bucket_name}_pab' not in content and 'aws_s3_bucket_public_access_block' not in content:
+        content += pab_config
+
+elif check_id == "CKV_AWS_21":  # Add encryption
+    encrypt_config = f'''
 
 # Added by S3 Security Gatekeeper
 resource "aws_s3_bucket_server_side_encryption_configuration" "{bucket_name}_encryption" {{
@@ -556,11 +556,11 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "{bucket_name}_enc
     }}
   }}
 }}'''
-                      if f'{bucket_name}_encryption' not in content:
-                          content += encrypt_config
-                  
-                  elif check_id == "CKV_AWS_18":  # Add access logging
-                      logging_config = f'''
+    if f'{bucket_name}_encryption' not in content:
+        content += encrypt_config
+
+elif check_id == "CKV_AWS_18":  # Add access logging
+    logging_config = f'''
 
 # Added by S3 Security Gatekeeper
 resource "aws_s3_bucket" "{bucket_name}_logs" {{
@@ -573,11 +573,11 @@ resource "aws_s3_bucket_logging" "{bucket_name}_logging" {{
   target_bucket = aws_s3_bucket.{bucket_name}_logs.id
   target_prefix = "access-logs/"
 }}'''
-                      if f'{bucket_name}_logging' not in content:
-                          content += logging_config
-                  
-                  elif check_id == "CKV_AWS_19":  # Add versioning
-                      versioning_config = f'''
+    if f'{bucket_name}_logging' not in content:
+        content += logging_config
+
+elif check_id == "CKV_AWS_19":  # Add versioning
+    versioning_config = f'''
 
 # Added by S3 Security Gatekeeper
 resource "aws_s3_bucket_versioning" "{bucket_name}_versioning" {{
