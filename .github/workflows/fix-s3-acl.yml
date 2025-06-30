@@ -953,3 +953,7 @@ resource "aws_s3_bucket_versioning" "{bucket_name}_versioning" {{
         with:
           sarif_file: checkov_reports/
         continue-on-error: true
+
+      - name: 🛠 Run Fix Script
+        run: |
+          python scripts/fix_s3_buckets.py
