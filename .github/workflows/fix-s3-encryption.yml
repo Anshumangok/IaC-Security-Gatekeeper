@@ -4,24 +4,28 @@ on:
   workflow_dispatch:
 
 jobs:
-  fix-encryption:
+  fix_s3_encryption:
+    name: Auto-Fix S3 Encryption in Terraform
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repo
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
+          python-version: '3.x'
 
-      - name: Run encryption fixer
-        run: python scripts/fix_s3_encryption.py
+      - name: Create output directory
+        run: mkdir -p fix_artifacts
 
-      - name: Commit and push changes
+      - name: Run S3 Encryption Fix Script
         run: |
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-          git add .
-          git commit -m "🔐 Auto-fixed: S3 bucket encryption"
-          git push
+          python scripts/fix_s3_encryption.py
+
+      - name: Upload Fixed Files as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fixed-s3-encryption
+          path: fix_artifacts/
