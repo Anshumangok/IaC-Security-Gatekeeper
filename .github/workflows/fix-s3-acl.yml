@@ -585,7 +585,7 @@ resource "aws_s3_bucket_versioning" "{bucket_name}_versioning" {{
   versioning_configuration {{
     status = "Enabled"
   }}
-}}'''
+}}'''   
                       if f'{bucket_name}_versioning' not in content:
                           content += versioning_config
                   
