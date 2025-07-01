@@ -529,7 +529,7 @@ jobs:
                           content = re.sub(pattern, replacement, content, flags=re.IGNORECASE)
                   
                   elif check_id in ["CKV2_AWS_6", "CKV_AWS_54", "CKV_AWS_55", "CKV_AWS_56"]:  # Add public access block
-                      pab_config = f'''
+                      pab_config = f"""
 
 # Added by S3 Security Gatekeeper
 resource "aws_s3_bucket_public_access_block" "{bucket_name}_pab" {{
@@ -539,10 +539,10 @@ resource "aws_s3_bucket_public_access_block" "{bucket_name}_pab" {{
   block_public_policy     = true
   ignore_public_acls      = true
   restrict_public_buckets = true
-}}'''
-                      if f'{bucket_name}_pab' not in content and 'aws_s3_bucket_public_access_block' not in content:
+}}"""
+                      if f"{bucket_name}_pab" not in content and "aws_s3_bucket_public_access_block" not in content:
                           content += pab_config
-                  
+                          
                   elif check_id == "CKV_AWS_21":  # Add encryption
                       encrypt_config = f'''
 
