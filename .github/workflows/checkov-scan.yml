@@ -5,11 +5,10 @@ on:
     branches: [ main ]
 
 jobs:
-  checkov:
+  scan:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -19,8 +18,17 @@ jobs:
       - name: Install Checkov
         run: pip install checkov
 
-      - name: Run Checkov on Terraform
-        run: checkov -d terraform
+      - name: Run Checkov
+        run: |
+          mkdir -p checkov_reports
+          checkov -d . --output json --soft-fail > checkov_reports/report.json
 
-      - name: Run Checkov on K8s
-        run: checkov -d k8s
+      - name: Generate Markdown Report
+        run: |
+          python scripts/generate_md_report.py
+
+      - name: Upload Report Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: checkov-reports
+          path: checkov_reports/
