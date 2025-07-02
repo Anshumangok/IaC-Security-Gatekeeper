@@ -27,7 +27,7 @@ jobs:
         run: mkdir -p checkov_reports
 
       - name: Run Checkov on Terraform
-        run: checkov -d terraform -o json > checkov_reports/report.json
+        run: checkov -d terraform --soft-fail -o json > checkov_reports/report.json
 
       - name: Generate PR comment with fix suggestions
         run: python3 scripts/generate_pr_comment.py
