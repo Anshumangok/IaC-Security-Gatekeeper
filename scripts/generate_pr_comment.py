@@ -30,7 +30,7 @@ def generate_comment(checks):
             name = check.get("check_name", "Unknown Check")
             file_path = check.get("file_path", "N/A")
             resource = check.get("resource", "unknown.resource")
-            severity = check.get("severity", "UNKNOWN").upper()
+            severity = (check.get("severity") or "UNKNOWN").upper()
             bucket_name = extract_bucket_name(resource)
             fix = get_fix_snippet(check_id, bucket_name)
 
