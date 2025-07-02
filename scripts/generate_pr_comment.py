@@ -129,9 +129,10 @@ def extract_resource_name(resource_id):
 
 def get_severity_info(check):
     """Get severity information with fallback."""
-    severity = check.get("severity", "").upper()
-    
-    # Fallback severity mapping for common checks
+    raw = check.get("severity")
+    severity = str(raw).upper() if raw else ""
+
+    # Fallback severity mapping
     severity_fallback = {
         "CKV_AWS_20": "HIGH",    # S3 public read
         "CKV_AWS_21": "HIGH",    # S3 encryption
@@ -139,13 +140,14 @@ def get_severity_info(check):
         "CKV_AWS_18": "MEDIUM",  # S3 access logging
         "CKV_AWS_19": "HIGH",    # S3 SSL only
     }
-    
+
     if not severity or severity == "UNKNOWN":
         check_id = check.get("check_id", "")
         severity = severity_fallback.get(check_id, "MEDIUM")
-    
+
     emoji = SEVERITY_EMOJIS.get(severity, SEVERITY_EMOJIS['UNKNOWN'])
     return severity, emoji
+
 
 def format_file_path(file_path):
     """Format file path for display."""
