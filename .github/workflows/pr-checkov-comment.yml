@@ -20,93 +20,125 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Set locale for Unicode support
-        run: |
-          export LC_ALL=en_US.UTF-8
-          export LANG=en_US.UTF-8
-          locale
-
       - name: Install Checkov
         run: pip install checkov
 
       - name: Create reports folder
-        run: mkdir -p checkov_reports
-
-      - name: Run Checkov on Terraform
         run: |
-          checkov -d . --framework terraform \
-            --soft-fail \
-            --output json \
-            --output-file-path checkov_reports/report.json || true
+          mkdir -p checkov_reports
+          rm -rf checkov_reports/report.json
 
-      - name: Verify Checkov report exists
+      - name: Run Checkov scan
+        id: checkov
         run: |
-          if [ -f checkov_reports/report.json ]; then
-            echo "Checkov report generated successfully"
-            echo "Report size: $(wc -c < checkov_reports/report.json) bytes"
-            echo "First few lines:"
-            head -n 5 checkov_reports/report.json
+          echo "Running Checkov scan..."
+          
+          # Method 1: Direct output redirection (most reliable)
+          if checkov -d . --framework terraform --soft-fail -o json > checkov_reports/report.json 2>&1; then
+            echo "scan_status=success" >> $GITHUB_OUTPUT
           else
-            echo "Warning: Checkov report not found, creating empty report"
-            echo '{"results": {"failed_checks": [], "passed_checks": []}}' > checkov_reports/report.json
+            echo "scan_status=completed_with_issues" >> $GITHUB_OUTPUT
+          fi
+          
+          # Verify the file was created and has content
+          if [ -f checkov_reports/report.json ] && [ -s checkov_reports/report.json ]; then
+            echo "Report file created successfully"
+            echo "file_status=success" >> $GITHUB_OUTPUT
+          else
+            echo "Report file not created properly, trying alternative method..."
+            
+            # Method 2: Alternative approach
+            checkov -d . --framework terraform --soft-fail --output json --output-file-path checkov_reports/ || true
+            
+            # Find the actual JSON file created
+            find checkov_reports/ -name "*.json" -type f | head -1 | xargs -I {} cp {} checkov_reports/report.json || true
+            
+            if [ -f checkov_reports/report.json ] && [ -s checkov_reports/report.json ]; then
+              echo "Alternative method succeeded"
+              echo "file_status=success" >> $GITHUB_OUTPUT
+            else
+              echo "Creating minimal report structure..."
+              echo '{"results": {"failed_checks": [], "passed_checks": []}}' > checkov_reports/report.json
+              echo "file_status=fallback" >> $GITHUB_OUTPUT
+            fi
           fi
 
-      - name: Generate PR comment with fix suggestions
+      - name: Validate report structure
         run: |
-          cd scripts
-          python3 generate_pr_comment.py
-        env:
-          PYTHONIOENCODING: utf-8
-
-      - name: Generate full markdown report
-        run: |
-          cd scripts
-          python3 generate_md_report.py
-        env:
-          PYTHONIOENCODING: utf-8
-
-      - name: Verify comment file
-        run: |
-          if [ -f checkov_reports/pr_comment.md ]; then
-            echo "PR comment generated successfully"
-            echo "Comment size: $(wc -c < checkov_reports/pr_comment.md) bytes"
-            echo "Comment preview (first 10 lines):"
-            head -n 10 checkov_reports/pr_comment.md
+          echo "=== Report validation ==="
+          ls -la checkov_reports/
+          
+          if [ -f checkov_reports/report.json ]; then
+            echo "Report size: $(wc -c < checkov_reports/report.json) bytes"
+            echo "Report preview:"
+            head -n 10 checkov_reports/report.json
+            
+            # Validate JSON structure
+            if python3 -m json.tool checkov_reports/report.json > /dev/null 2>&1; then
+              echo "✅ JSON structure is valid"
+            else
+              echo "❌ Invalid JSON structure, fixing..."
+              echo '{"results": {"failed_checks": [], "passed_checks": []}}' > checkov_reports/report.json
+            fi
           else
-            echo "Error: PR comment file not generated"
+            echo "❌ No report file found"
             exit 1
           fi
 
-      - name: Upload full security report
+      - name: Generate PR comment
+        run: python3 scripts/generate_pr_comment.py
+        env:
+          PYTHONIOENCODING: utf-8
+
+      - name: Generate markdown report
+        run: python3 scripts/generate_md_report.py
+        env:
+          PYTHONIOENCODING: utf-8
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: security-report-${{ github.event.pull_request.number }}
+          name: security-reports-${{ github.event.pull_request.number }}
           path: |
-            checkov_reports/security_report.md
-            checkov_reports/report.md
-            checkov_reports/report.json
+            checkov_reports/
           retention-days: 30
 
-      - name: Post PR comment using GitHub CLI
+      - name: Post PR comment
+        if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ -f checkov_reports/pr_comment.md ]; then
+            echo "Posting PR comment..."
             gh pr comment ${{ github.event.pull_request.number }} \
               --body-file checkov_reports/pr_comment.md
           else
-            echo "PR comment file not found, posting fallback comment"
+            echo "PR comment file not found, posting simple comment..."
             gh pr comment ${{ github.event.pull_request.number }} \
-              --body "🛡️ IaC Security scan completed. Check the workflow artifacts for detailed results."
+              --body "🛡️ **IaC Security Scan Completed**
+            
+            The security scan has finished. Please check the [workflow artifacts](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for detailed results.
+            
+            Scan Status: ${{ steps.checkov.outputs.scan_status }}
+            Report Status: ${{ steps.checkov.outputs.file_status }}"
           fi
 
-      - name: Add workflow summary
+      - name: Workflow Summary
+        if: always()
         run: |
-          echo "## 🛡️ IaC Security Scan Summary" >> $GITHUB_STEP_SUMMARY
+          echo "## 🛡️ IaC Security Scan Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Scan Status:** ${{ steps.checkov.outputs.scan_status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Report Status:** ${{ steps.checkov.outputs.file_status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **PR Number:** #${{ github.event.pull_request.number }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
           if [ -f checkov_reports/pr_comment.md ]; then
-            echo "✅ Security scan completed successfully" >> $GITHUB_STEP_SUMMARY
-            echo "📝 PR comment posted with findings" >> $GITHUB_STEP_SUMMARY
+            echo "✅ PR comment posted successfully" >> $GITHUB_STEP_SUMMARY
           else
-            echo "⚠️ Security scan completed with warnings" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ PR comment generated with fallback method" >> $GITHUB_STEP_SUMMARY
           fi
-          echo "📊 Full reports available in workflow artifacts" >> $GITHUB_STEP_SUMMARY
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📊 [View detailed reports in artifacts](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY

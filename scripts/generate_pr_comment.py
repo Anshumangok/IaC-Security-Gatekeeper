@@ -1,176 +1,137 @@
+#!/usr/bin/env python3
+"""
+Debug script to troubleshoot Checkov output issues
+"""
+
 import json
-import sys
+import os
 from pathlib import Path
-from fix_snippets import FIX_SNIPPETS
 
-CHECKOV_JSON = Path("checkov_reports/report.json")
-COMMENT_FILE = Path("checkov_reports/pr_comment.md")
-
-# Define emojis as Unicode escape sequences for better compatibility
-EMOJIS = {
-    'lock': '\U0001F512',      # 🔒
-    'check': '\U00002705',     # ✅  
-    'bulb': '\U0001F4A1',      # 💡
-    'shield': '\U0001F6E1',    # 🛡️
-    'warning': '\U000026A0',   # ⚠️
-}
-
-def load_checkov_results():
-    """Load Checkov results with proper error handling."""
-    try:
-        if not CHECKOV_JSON.exists():
-            print(f"Checkov report not found at {CHECKOV_JSON}")
-            return []
-            
-        with open(CHECKOV_JSON, encoding='utf-8') as f:
-            data = json.load(f)
+def check_checkov_report():
+    """Check the Checkov report and provide debugging info."""
+    report_path = Path("checkov_reports/report.json")
+    
+    print("=== Checkov Report Debug ===")
+    print(f"Current directory: {os.getcwd()}")
+    print(f"Report path: {report_path.absolute()}")
+    print(f"Report exists: {report_path.exists()}")
+    
+    if report_path.exists():
+        print(f"Report is file: {report_path.is_file()}")
+        print(f"Report is directory: {report_path.is_dir()}")
         
-        # Handle different JSON structures
-        if "results" in data:
-            return data["results"].get("failed_checks", [])
-        elif "failed_checks" in data:
-            return data.get("failed_checks", [])
-        elif isinstance(data, list) and data:
-            # Handle array format
-            all_failed = []
-            for item in data:
-                if isinstance(item, dict):
-                    if "results" in item:
-                        all_failed.extend(item["results"].get("failed_checks", []))
-                    elif "failed_checks" in item:
-                        all_failed.extend(item.get("failed_checks", []))
-            return all_failed
-        else:
-            return []
-    except Exception as e:
-        print(f"Error loading Checkov results: {e}")
-        return []
-
-def get_fix_snippet(check_id, bucket_name):
-    """Get fix snippet for a specific check ID."""
-    template = FIX_SNIPPETS.get(check_id)
-    if not template:
-        return "_No automated fix available for this check._"
-    return template.format(bucket_name=bucket_name)
-
-def extract_bucket_name(resource_id):
-    """Extract bucket name from resource ID."""
-    if not resource_id:
-        return "bucket"
-    parts = resource_id.split(".")
-    return parts[-1] if len(parts) >= 2 else "bucket"
-
-def get_severity_emoji(severity):
-    """Get emoji for severity level."""
-    severity_map = {
-        'CRITICAL': '\U0001F534',  # 🔴
-        'HIGH': '\U0001F7E0',      # 🟠
-        'MEDIUM': '\U0001F7E1',    # 🟡
-        'LOW': '\U0001F535',       # 🔵
-        'UNKNOWN': '\U000026AB'    # ⚫
-    }
-    return severity_map.get(severity.upper(), '\U000026AB')
-
-def generate_comment(checks):
-    """Generate PR comment with security findings."""
-    try:
-        lines = [f"# {EMOJIS['shield']} IaC Security Scan Report", ""]
-        
-        if not checks:
-            lines.append(f"{EMOJIS['check']} **All security checks passed!** No issues detected by Checkov.")
-            lines.append("")
-            lines.append("Great job maintaining secure infrastructure code!")
-        else:
-            lines.append(f"{EMOJIS['warning']} **{len(checks)} security issue(s) detected**")
-            lines.append("")
-            
-            # Group by severity
-            severity_groups = {}
-            for check in checks:
-                severity = (check.get("severity") or "UNKNOWN").upper()
-                if severity not in severity_groups:
-                    severity_groups[severity] = []
-                severity_groups[severity].append(check)
-            
-            # Sort by severity priority
-            severity_order = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'UNKNOWN']
-            
-            for severity in severity_order:
-                if severity not in severity_groups:
-                    continue
-                    
-                severity_checks = severity_groups[severity]
-                emoji = get_severity_emoji(severity)
-                lines.append(f"## {emoji} {severity} Severity ({len(severity_checks)} issue(s))")
-                lines.append("")
+        if report_path.is_file():
+            try:
+                print(f"File size: {report_path.stat().st_size} bytes")
                 
-                for check in severity_checks:
-                    check_id = check.get("check_id", "N/A")
-                    name = check.get("check_name", "Unknown Check")
-                    file_path = check.get("file_path", "N/A")
-                    resource = check.get("resource", "unknown.resource")
-                    bucket_name = extract_bucket_name(resource)
-                    fix = get_fix_snippet(check_id, bucket_name)
+                # Try to read as text first
+                with open(report_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    print(f"Content length: {len(content)} characters")
+                    print("First 200 characters:")
+                    print(repr(content[:200]))
                     
-                    # Get line numbers if available
-                    line_range = check.get("file_line_range", [])
-                    line_info = f" (lines {line_range[0]}-{line_range[-1]})" if line_range else ""
+                # Try to parse as JSON
+                try:
+                    data = json.loads(content)
+                    print("✅ Valid JSON structure")
+                    print(f"JSON type: {type(data)}")
                     
-                    lines.append(f"### {name}")
-                    lines.append(f"- **Check ID:** `{check_id}`")
-                    lines.append(f"- **File:** `{file_path}`{line_info}")
-                    lines.append(f"- **Resource:** `{resource}`")
+                    if isinstance(data, dict):
+                        print(f"Top-level keys: {list(data.keys())}")
+                        
+                        if "results" in data:
+                            results = data["results"]
+                            print(f"Results type: {type(results)}")
+                            if isinstance(results, dict):
+                                print(f"Results keys: {list(results.keys())}")
+                                failed = results.get("failed_checks", [])
+                                passed = results.get("passed_checks", [])
+                                print(f"Failed checks: {len(failed)}")
+                                print(f"Passed checks: {len(passed)}")
+                        
+                        elif "failed_checks" in data:
+                            failed = data.get("failed_checks", [])
+                            passed = data.get("passed_checks", [])
+                            print(f"Failed checks: {len(failed)}")
+                            print(f"Passed checks: {len(passed)}")
                     
-                    # Add description if available
-                    description = check.get("description", "").strip()
-                    if description:
-                        lines.append(f"- **Description:** {description}")
+                    elif isinstance(data, list):
+                        print(f"Array with {len(data)} items")
+                        if data:
+                            print(f"First item type: {type(data[0])}")
+                            if isinstance(data[0], dict):
+                                print(f"First item keys: {list(data[0].keys())}")
                     
-                    lines.append("")
-                    lines.append(f"#### {EMOJIS['bulb']} Suggested Fix:")
-                    lines.append(fix)
-                    lines.append("")
-                    lines.append("---")
-                    lines.append("")
+                except json.JSONDecodeError as e:
+                    print(f"❌ Invalid JSON: {e}")
+                    print("Attempting to fix JSON structure...")
+                    
+                    # Try to extract valid JSON from the content
+                    lines = content.split('\n')
+                    for i, line in enumerate(lines):
+                        if line.strip().startswith('{') or line.strip().startswith('['):
+                            try:
+                                potential_json = '\n'.join(lines[i:])
+                                json.loads(potential_json)
+                                print(f"Found valid JSON starting at line {i+1}")
+                                break
+                            except:
+                                continue
+                    else:
+                        print("No valid JSON found in file")
+                        
+            except Exception as e:
+                print(f"Error reading file: {e}")
         
-        # Add footer
-        lines.append("---")
-        lines.append("*This comment was automatically generated by the IaC Security Gatekeeper*")
+        elif report_path.is_dir():
+            print("Report path is a directory. Contents:")
+            try:
+                for item in report_path.iterdir():
+                    print(f"  - {item.name} ({'dir' if item.is_dir() else 'file'})")
+            except Exception as e:
+                print(f"Error listing directory: {e}")
+    else:
+        print("Report file does not exist")
         
-        # Write to file with proper encoding
-        with open(COMMENT_FILE, "w", encoding='utf-8') as f:
-            content = "\n".join(lines)
-            f.write(content)
-            
-        print(f"PR comment generated successfully at {COMMENT_FILE}")
-        print(f"Comment length: {len(content)} characters")
-        
-    except Exception as e:
-        print(f"Error generating comment: {e}")
-        # Create minimal fallback comment
-        fallback_lines = [
-            "# IaC Security Scan Report",
-            "",
-            "Security scan completed with some issues processing the results.",
-            "Please check the full security report in the workflow artifacts.",
-            "",
-            "---",
-            "*Generated by IaC Security Gatekeeper*"
-        ]
-        
-        with open(COMMENT_FILE, "w", encoding='utf-8') as f:
-            f.write("\n".join(fallback_lines))
-        print("Fallback comment created")
+        # Check if directory exists
+        report_dir = report_path.parent
+        print(f"Report directory exists: {report_dir.exists()}")
+        if report_dir.exists():
+            print("Directory contents:")
+            try:
+                for item in report_dir.iterdir():
+                    print(f"  - {item.name} ({'dir' if item.is_dir() else 'file'})")
+            except Exception as e:
+                print(f"Error listing directory: {e}")
+
+def create_test_report():
+    """Create a test report for validation."""
+    test_report = {
+        "results": {
+            "failed_checks": [
+                {
+                    "check_id": "CKV_AWS_21",
+                    "check_name": "S3 Bucket has server-side encryption enabled",
+                    "file_path": "main.tf",
+                    "resource": "aws_s3_bucket.unsecure_bucket",
+                    "severity": "HIGH",
+                    "description": "S3 bucket should have server-side encryption enabled"
+                }
+            ],
+            "passed_checks": []
+        }
+    }
+    
+    report_path = Path("checkov_reports/test_report.json")
+    report_path.parent.mkdir(exist_ok=True)
+    
+    with open(report_path, 'w', encoding='utf-8') as f:
+        json.dump(test_report, f, indent=2)
+    
+    print(f"✅ Test report created at {report_path}")
 
 if __name__ == "__main__":
-    try:
-        print("Loading Checkov results...")
-        checks = load_checkov_results()
-        print(f"Found {len(checks)} failed checks")
-        
-        print("Generating PR comment...")
-        generate_comment(checks)
-        
-    except Exception as e:
-        print(f"Fatal error: {e}")
-        sys.exit(1)
+    check_checkov_report()
+    print("\n" + "="*50 + "\n")
+    create_test_report()
