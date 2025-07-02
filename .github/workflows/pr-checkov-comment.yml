@@ -1,0 +1,49 @@
+name: \ud83d\udee1\ufe0f PR IaC Security Bot
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.11
+
+      - name: Install Checkov
+        run: pip install checkov
+
+      - name: Create reports folder
+        run: mkdir -p checkov_reports
+
+      - name: Run Checkov on Terraform
+        run: checkov -d terraform -o json > checkov_reports/report.json
+
+      - name: Generate PR comment with fix suggestions
+        run: python3 scripts/generate_pr_comment.py
+
+      - name: Generate full markdown report
+        run: python3 scripts/generate_md_report.py
+
+      - name: Upload full security report
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-report
+          path: checkov_reports/security_report.md
+
+      - name: Post PR comment using GitHub CLI
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr comment ${{ github.event.pull_request.number }} \
+            --body-file checkov_reports/pr_comment.md
