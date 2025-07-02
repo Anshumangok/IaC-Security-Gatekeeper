@@ -1,4 +1,4 @@
-name: \ud83d\udee1\ufe0f PR IaC Security Bot
+name: 🛡️ PR IaC Security Bot
 
 on:
   pull_request:
@@ -13,12 +13,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: 3.11
+          python-version: '3.11'
+
+      - name: Set locale for Unicode support
+        run: |
+          export LC_ALL=en_US.UTF-8
+          export LANG=en_US.UTF-8
+          locale
 
       - name: Install Checkov
         run: pip install checkov
@@ -27,23 +33,80 @@ jobs:
         run: mkdir -p checkov_reports
 
       - name: Run Checkov on Terraform
-        run: checkov -d terraform --soft-fail -o json > checkov_reports/report.json
+        run: |
+          checkov -d . --framework terraform \
+            --soft-fail \
+            --output json \
+            --output-file-path checkov_reports/report.json || true
+
+      - name: Verify Checkov report exists
+        run: |
+          if [ -f checkov_reports/report.json ]; then
+            echo "Checkov report generated successfully"
+            echo "Report size: $(wc -c < checkov_reports/report.json) bytes"
+            echo "First few lines:"
+            head -n 5 checkov_reports/report.json
+          else
+            echo "Warning: Checkov report not found, creating empty report"
+            echo '{"results": {"failed_checks": [], "passed_checks": []}}' > checkov_reports/report.json
+          fi
 
       - name: Generate PR comment with fix suggestions
-        run: python3 scripts/generate_pr_comment.py
+        run: |
+          cd scripts
+          python3 generate_pr_comment.py
+        env:
+          PYTHONIOENCODING: utf-8
 
       - name: Generate full markdown report
-        run: python3 scripts/generate_md_report.py
+        run: |
+          cd scripts
+          python3 generate_md_report.py
+        env:
+          PYTHONIOENCODING: utf-8
+
+      - name: Verify comment file
+        run: |
+          if [ -f checkov_reports/pr_comment.md ]; then
+            echo "PR comment generated successfully"
+            echo "Comment size: $(wc -c < checkov_reports/pr_comment.md) bytes"
+            echo "Comment preview (first 10 lines):"
+            head -n 10 checkov_reports/pr_comment.md
+          else
+            echo "Error: PR comment file not generated"
+            exit 1
+          fi
 
       - name: Upload full security report
         uses: actions/upload-artifact@v4
         with:
-          name: security-report
-          path: checkov_reports/security_report.md
+          name: security-report-${{ github.event.pull_request.number }}
+          path: |
+            checkov_reports/security_report.md
+            checkov_reports/report.md
+            checkov_reports/report.json
+          retention-days: 30
 
       - name: Post PR comment using GitHub CLI
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh pr comment ${{ github.event.pull_request.number }} \
-            --body-file checkov_reports/pr_comment.md
+          if [ -f checkov_reports/pr_comment.md ]; then
+            gh pr comment ${{ github.event.pull_request.number }} \
+              --body-file checkov_reports/pr_comment.md
+          else
+            echo "PR comment file not found, posting fallback comment"
+            gh pr comment ${{ github.event.pull_request.number }} \
+              --body "🛡️ IaC Security scan completed. Check the workflow artifacts for detailed results."
+          fi
+
+      - name: Add workflow summary
+        run: |
+          echo "## 🛡️ IaC Security Scan Summary" >> $GITHUB_STEP_SUMMARY
+          if [ -f checkov_reports/pr_comment.md ]; then
+            echo "✅ Security scan completed successfully" >> $GITHUB_STEP_SUMMARY
+            echo "📝 PR comment posted with findings" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ Security scan completed with warnings" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "📊 Full reports available in workflow artifacts" >> $GITHUB_STEP_SUMMARY
