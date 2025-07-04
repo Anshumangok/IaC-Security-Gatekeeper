@@ -55,6 +55,14 @@ CHECKOV_SEVERITY_MAP = {
     "CKV_TF_1": "LOW",        # Missing description
 }
 
+# Define severity order (highest to lowest)
+SEVERITY_ORDER = {
+    "CRITICAL": 0,
+    "HIGH": 1,
+    "MEDIUM": 2,
+    "LOW": 3
+}
+
 def get_severity_emoji(severity):
     """Return emoji for severity level"""
     return {
@@ -67,6 +75,15 @@ def get_severity_emoji(severity):
 def get_check_severity(check_id):
     """Get severity for a check ID"""
     return CHECKOV_SEVERITY_MAP.get(check_id, "MEDIUM")
+
+def sort_checks_by_severity(checks):
+    """Sort checks by severity level (highest to lowest)"""
+    def get_severity_priority(check):
+        check_id = check.get("check_id", "N/A")
+        severity = get_check_severity(check_id)
+        return SEVERITY_ORDER.get(severity, 99)  # Default to lowest priority if not found
+    
+    return sorted(checks, key=get_severity_priority)
 
 def truncate_text(text, max_length=30):
     """Truncate text to specified length"""
@@ -116,6 +133,9 @@ def parse_checkov_report(report_path):
         passed_checks = results.get("passed_checks", [])
         failed_checks = results.get("failed_checks", [])
     
+    # Sort failed checks by severity (highest to lowest)
+    failed_checks = sort_checks_by_severity(failed_checks)
+    
     passed_count = len(passed_checks)
     failed_count = len(failed_checks)
     total_count = passed_count + failed_count
@@ -137,8 +157,22 @@ _Generated on {timestamp}_
         report += "\n🎉 **All checks passed!** Your infrastructure is secure.\n"
         return report
     
+    # Add severity summary
+    severity_counts = {}
+    for check in failed_checks:
+        check_id = check.get("check_id", "N/A")
+        severity = get_check_severity(check_id)
+        severity_counts[severity] = severity_counts.get(severity, 0) + 1
+    
+    report += "\n## 📊 Severity Summary\n\n"
+    for severity in ["CRITICAL", "HIGH", "MEDIUM", "LOW"]:
+        if severity in severity_counts:
+            emoji = get_severity_emoji(severity)
+            count = severity_counts[severity]
+            report += f"- {emoji} **{severity}**: {count}\n"
+    
     # Add failed checks table
-    report += "\n## ❌ Failed Checks\n\n"
+    report += "\n## ❌ Failed Checks (Sorted by Severity)\n\n"
     report += "| # | Severity | Check ID | Name | File | Resource | Lines |\n"
     report += "|---|----------|----------|------|------|----------|-------|\n"
     
