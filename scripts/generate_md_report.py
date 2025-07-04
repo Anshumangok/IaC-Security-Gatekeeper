@@ -194,7 +194,7 @@ _Generated on {timestamp}_
         severity_emoji = get_severity_emoji(severity)
         
         # Truncate long names
-        short_name = truncate_text(check_name, 30)
+        short_name = check_name
         
         report += f"| {i} | {severity_emoji} {severity} | {check_id} | {short_name} | {file_path} | {resource} | {lines} |\n"
     
