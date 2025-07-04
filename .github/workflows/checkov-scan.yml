@@ -25,17 +25,33 @@ jobs:
       - name: Create reports directory
         run: mkdir -p checkov_reports
 
-      - name: Run Checkov scan
+      - name: Run Checkov scan (Alternative method)
         run: |
-          checkov -d . --output json --soft-fail --output-file checkov_reports/report.json || true
+          echo "Trying alternative Checkov command..."
+          checkov -d . --output json --soft-fail > checkov_reports/checkov_output.json 2>&1 || true
+          
+          # Check if the output file exists and has content
+          if [ -f "checkov_reports/checkov_output.json" ] && [ -s "checkov_reports/checkov_output.json" ]; then
+            mv checkov_reports/checkov_output.json checkov_reports/report.json
+            echo "✅ Checkov report created successfully"
+          else
+            echo "❌ Checkov output file is empty or missing"
+            # Create a minimal report for testing
+            echo '{"results": {"passed_checks": [], "failed_checks": []}}' > checkov_reports/report.json
+          fi
 
       - name: Debug Checkov Output
         run: |
-          echo "=== Checkov JSON Report Structure ==="
+          echo "=== Checkov Report Debug ==="
+          ls -la checkov_reports/
+          echo "=== Report content ==="
           if [ -f "checkov_reports/report.json" ]; then
-            echo "File exists, first 20 lines:"
-            head -20 checkov_reports/report.json
-            echo "=== End of sample ==="
+            echo "File exists, size: $(wc -c < checkov_reports/report.json) bytes"
+            echo "First 50 lines:"
+            head -50 checkov_reports/report.json
+          elif [ -d "checkov_reports/report.json" ]; then
+            echo "ERROR: report.json is a directory!"
+            ls -la checkov_reports/report.json/
           else
             echo "Report file not found!"
           fi

@@ -77,14 +77,23 @@ def truncate_text(text, max_length=30):
 def parse_checkov_report(report_path):
     """Parse Checkov JSON report and generate markdown"""
     
+    # Check if path exists and is a file
     if not os.path.exists(report_path):
         return "❌ Checkov report file not found!"
     
+    if os.path.isdir(report_path):
+        return f"❌ Expected file but found directory: {report_path}"
+    
     try:
         with open(report_path, 'r') as f:
-            data = json.load(f)
-    except json.JSONDecodeError:
-        return "❌ Invalid JSON in Checkov report!"
+            content = f.read().strip()
+            if not content:
+                return "❌ Checkov report file is empty!"
+            data = json.loads(content)
+    except json.JSONDecodeError as e:
+        return f"❌ Invalid JSON in Checkov report: {e}"
+    except Exception as e:
+        return f"❌ Error reading Checkov report: {e}"
     
     # Handle both list and dict formats from Checkov
     if isinstance(data, list):
