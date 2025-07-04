@@ -1,0 +1,46 @@
+name: Checkov Scan
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  checkov:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.x"
+
+      - name: Install Checkov
+        run: pip install checkov
+
+      - name: Create reports directory
+        run: mkdir -p checkov_reports
+
+      - name: Run Checkov scan
+        run: |
+          checkov -d . --output json --soft-fail > checkov_reports/report.json || true
+
+      - name: Generate Markdown Report
+        run: python scripts/generate_md_report.py
+
+      - name: Upload Checkov Report
+        uses: actions/upload-artifact@v3
+        with:
+          name: checkov-security-report
+          path: checkov_reports/
+
+      - name: Display Report Summary
+        run: |
+          echo "## 🛡️ Checkov Security Scan Results"
+          if [ -f "checkov_reports/report.md" ]; then
+            head -20 checkov_reports/report.md
+          fi
