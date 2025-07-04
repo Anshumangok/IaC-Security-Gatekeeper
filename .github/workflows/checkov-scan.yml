@@ -27,7 +27,18 @@ jobs:
 
       - name: Run Checkov scan
         run: |
-          checkov -d . --output json --soft-fail > checkov_reports/report.json || true
+          checkov -d . --output json --soft-fail --output-file checkov_reports/report.json || true
+
+      - name: Debug Checkov Output
+        run: |
+          echo "=== Checkov JSON Report Structure ==="
+          if [ -f "checkov_reports/report.json" ]; then
+            echo "File exists, first 20 lines:"
+            head -20 checkov_reports/report.json
+            echo "=== End of sample ==="
+          else
+            echo "Report file not found!"
+          fi
 
       - name: Generate Markdown Report
         run: python scripts/generate_md_report.py

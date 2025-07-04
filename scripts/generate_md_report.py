@@ -86,10 +86,26 @@ def parse_checkov_report(report_path):
     except json.JSONDecodeError:
         return "❌ Invalid JSON in Checkov report!"
     
-    # Extract results
-    results = data.get("results", {})
-    passed_checks = results.get("passed_checks", [])
-    failed_checks = results.get("failed_checks", [])
+    # Handle both list and dict formats from Checkov
+    if isinstance(data, list):
+        # If data is a list, find the first item with results
+        results = {}
+        for item in data:
+            if isinstance(item, dict) and "results" in item:
+                results = item.get("results", {})
+                break
+        # If no results found in list items, treat the list as failed_checks
+        if not results:
+            passed_checks = []
+            failed_checks = data if isinstance(data, list) else []
+        else:
+            passed_checks = results.get("passed_checks", [])
+            failed_checks = results.get("failed_checks", [])
+    else:
+        # Handle dictionary format
+        results = data.get("results", {})
+        passed_checks = results.get("passed_checks", [])
+        failed_checks = results.get("failed_checks", [])
     
     passed_count = len(passed_checks)
     failed_count = len(failed_checks)
