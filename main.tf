@@ -2,53 +2,45 @@ provider "aws" {
   region = "us-east-1"
 }
 
-# ❌ S3 bucket: Public and unencrypted
-resource "aws_s3_bucket" "public_bucket" {
-  bucket = "my-insecure-bucket"
-  acl    = "public-read"  # CKV_AWS_20
+# ✅ Secure S3 bucket with best practices
+resource "aws_s3_bucket" "secure_bucket" {
+  bucket = "my-secure-bucket-demo"
+  acl    = "private"
 
   tags = {
-    Name = "PublicBucket"
+    Environment = "Dev"
+    Project     = "IaC Security Gatekeeper"
   }
 }
 
-resource "aws_s3_bucket_public_access_block" "insecure_block" {
-  bucket = aws_s3_bucket.public_bucket.id
-
-  block_public_acls       = false  # CKV2_AWS_6
-  ignore_public_acls      = false
-  block_public_policy     = false
-  restrict_public_buckets = false
+resource "aws_s3_bucket_versioning" "secure_versioning" {
+  bucket = aws_s3_bucket.secure_bucket.id
+  versioning_configuration {
+    status = "Enabled"
+  }
 }
 
-# ❌ IAM policy allows wildcard actions and resources
-resource "aws_iam_policy" "bad_policy" {
-  name        = "AllowAllPolicy"
-  description = "Bad policy with wildcards"
+resource "aws_s3_bucket_server_side_encryption_configuration" "secure_encryption" {
+  bucket = aws_s3_bucket.secure_bucket.bucket
 
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Action   = "*",              # CKV_AWS_117
-        Effect   = "Allow",
-        Resource = "*"
-      }
-    ]
-  })
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
 }
 
-# ❌ Security group: open to the world
-resource "aws_security_group" "open_sg" {
-  name        = "open-sg"
-  description = "Allow all inbound traffic"
-  vpc_id      = "vpc-123456"
+# ✅ Security group with restricted access
+resource "aws_security_group" "secure_sg" {
+  name        = "secure_sg"
+  description = "Allow SSH from specific IP"
+  vpc_id      = "vpc-12345678"
 
   ingress {
-    from_port   = 0
-    to_port     = 65535
+    from_port   = 22
+    to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]     # CKV_AWS_23
+    cidr_blocks = ["203.0.113.25/32"] # specific IP only
   }
 
   egress {
@@ -59,24 +51,25 @@ resource "aws_security_group" "open_sg" {
   }
 }
 
-# ❌ RDS instance: not encrypted, publicly accessible
-resource "aws_db_instance" "bad_rds" {
-  identifier        = "bad-rds"
-  engine            = "mysql"
-  instance_class    = "db.t2.micro"
-  username          = "admin"
-  password          = "plain-text-password"   # CKV_AWS_79
-  publicly_accessible = true                  # CKV_AWS_16
-  allocated_storage = 20
-  skip_final_snapshot = true
+# ✅ IAM user with MFA
+resource "aws_iam_user" "dev_user" {
+  name = "developer-user"
+  tags = {
+    Team = "DevOps"
+  }
 }
 
-# ❌ EC2 instance: missing detailed monitoring and security group
-resource "aws_instance" "unhardened_ec2" {
-  ami           = "ami-0c94855ba95c71c99"  # Replace with a valid public AMI for your region
+resource "aws_iam_user_login_profile" "dev_user_profile" {
+  user    = aws_iam_user.dev_user.name
+  pgp_key = "keybase:example" # Replace with your real PGP key
+}
+
+# ✅ EC2 instance with secure settings
+resource "aws_instance" "secure_instance" {
+  ami           = "ami-0c55b159cbfafe1f0"
   instance_type = "t2.micro"
 
   tags = {
-    Name = "InsecureEC2"
+    Name = "SecureInstance"
   }
 }
