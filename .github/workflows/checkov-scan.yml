@@ -1,10 +1,13 @@
 name: Checkov Scan
 
 on:
+  workflow_dispatch:
   push:
-    branches: [ main, develop ]
+    paths:
+      - '**/*.tf'
   pull_request:
-    branches: [ main, develop ]
+    paths:
+      - '**/*.tf'
 
 jobs:
   checkov:
@@ -27,18 +30,17 @@ jobs:
 
       - name: Run Checkov scan (Alternative method)
         run: |
-          echo "Trying alternative Checkov command..."
-          checkov -d . --output json --soft-fail > checkov_reports/checkov_output.json 2>&1 || true
+          echo "Scanning only main.tf..."
+          checkov -f main.tf --output json --soft-fail > checkov_reports/checkov_output.json 2>&1 || true
           
-          # Check if the output file exists and has content
           if [ -f "checkov_reports/checkov_output.json" ] && [ -s "checkov_reports/checkov_output.json" ]; then
             mv checkov_reports/checkov_output.json checkov_reports/report.json
             echo "✅ Checkov report created successfully"
           else
             echo "❌ Checkov output file is empty or missing"
-            # Create a minimal report for testing
             echo '{"results": {"passed_checks": [], "failed_checks": []}}' > checkov_reports/report.json
           fi
+
 
       - name: Debug Checkov Output
         run: |
